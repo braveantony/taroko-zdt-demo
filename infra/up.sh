@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# 一鍵建立 taroko-zdt-demo 的 kind + Cilium + L2 叢集。
+# 對應 README 步驟 1–6(podman 網路 → kind → kubeconfig → Gateway API CRD → Cilium → L2)。
+# 用法: sudo -v; ./up.sh        (會用到 sudo podman;先 sudo -v 免中途卡密碼)
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+K="kubectl --context kind-kind"
+CILIUM_VERSION="1.20.1"
+GWAPI_VERSION="v1.6.1"
+KIND="sudo KIND_EXPERIMENTAL_PROVIDER=podman"
+
+log(){ printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
+
+# ── 0. 叢集已存在就先擋下 ────────────────────────────────
+if $KIND kind get clusters 2>/dev/null | grep -qx kind; then
+  echo "叢集 kind 已存在。要重建請先執行 ./down.sh(或 $KIND kind delete cluster --name kind)。"
+  exit 1
+fi
+
+# ── 1. podman 網路(固定 10.89.0.0/24,LB pool 依賴此段) ──
+log "1/6 podman 網路"
+if ! sudo podman network exists kind; then
+  sudo podman network create --driver bridge --subnet 10.89.0.0/24 --gateway 10.89.0.1 kind
+fi
+sub="$(sudo podman network inspect kind --format '{{range .Subnets}}{{.Subnet}} {{end}}')"
+echo "  kind 網路 subnet: $sub"
+case "$sub" in
+  *10.89.0.0/24*) ;;
+  *) echo "  ⚠ subnet 不是 10.89.0.0/24,LB pool(10.89.0.192/27)會對不上;請 sudo podman network rm kind 後重跑。"; exit 1;;
+esac
+
+# ── 2. 建叢集 ────────────────────────────────────────────
+log "2/6 kind create cluster (1 control + 4 worker)"
+$KIND KIND_EXPERIMENTAL_PODMAN_NETWORK=kind kind create cluster --config "$HERE/kind.yaml"
+
+# ── 3. 合併 kubeconfig 到 ~/.kube/config ────────────────
+log "3/6 kubeconfig"
+tmp="$(mktemp)"
+$KIND kind get kubeconfig --name kind > "$tmp"
+KUBECONFIG="$HOME/.kube/config:$tmp" kubectl config view --flatten > "$HOME/.kube/config.new"
+mv "$HOME/.kube/config.new" "$HOME/.kube/config" && chmod 600 "$HOME/.kube/config" && rm -f "$tmp"
+
+# ── 4. Gateway API CRD ──────────────────────────────────
+log "4/6 Gateway API CRD $GWAPI_VERSION"
+B="https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/${GWAPI_VERSION}/config/crd/standard"
+for c in gatewayclasses gateways httproutes grpcroutes referencegrants backendtlspolicies tlsroutes; do
+  $K apply --server-side -f "$B/gateway.networking.k8s.io_${c}.yaml"
+done
+
+# ── 5. Cilium(native routing + KPR + L2 + Gateway API) ──
+log "5/6 Cilium $CILIUM_VERSION"
+helm repo add cilium https://helm.cilium.io/ >/dev/null 2>&1 || true
+helm repo update >/dev/null
+helm upgrade --install cilium cilium/cilium --version "$CILIUM_VERSION" \
+  -n kube-system --kube-context kind-kind -f "$HERE/cilium/values.yaml"
+$K -n kube-system rollout status ds/cilium --timeout=15m
+$K wait --for=condition=Ready node --all --timeout=5m
+
+# ── 6. L2 announcement(LB pool + policy) ────────────────
+log "6/6 L2 announcement"
+$K apply -f "$HERE/l2/lb-pool.yaml" -f "$HERE/l2/l2-policy.yaml"
+
+log "✅ 叢集就緒"
+$K get nodes -o wide
+echo
+echo "下一步:部署 taroko demo(step0) → 見上層 README。"
