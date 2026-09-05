@@ -1,9 +1,9 @@
-# Step 0 — 裸奔(bare):什麼都不處理
+# Step 0:什麼都不處理
 
 **故事**:hydra 收到 `SIGTERM` 立即死、SSE/HTTP 連線硬斷、進度存在記憶體隨 pod 消失而歸零。
 這就是 rolling update 下 stateful 工作負載「完全不處理」的樣子,作為 step1–4 的對照基準。
 
-**step0 相對 base 陽春疊了什麼**(見 `deploy/step0-bare/kustomization.yaml`):
+**step0 相對 base 陽春疊了什麼**(見 `deploy/step0/kustomization.yaml`):
 
 | 疊上去的 | 值 | 用途 |
 |---|---|---|
@@ -12,7 +12,7 @@
 | `strategy` | `maxUnavailable=0` / `maxSurge=1` | 先起新、後刪舊,容量不下降 |
 | `terminationGracePeriodSeconds` | `30` | SIGTERM → SIGKILL 的預算 |
 | `livenessProbe` | `GET /healthz` | 掛了會重啟 |
-| env | `HYDRA_GRACEFUL=off`、`STATE_BACKEND=memory`、`SSE_DRAIN=off` | 裸奔參數 |
+| env | `HYDRA_GRACEFUL=off`、`STATE_BACKEND=memory`、`SSE_DRAIN=off` | step0 參數 |
 
 **沒有** preStop、**沒有** readinessProbe、**沒有** graceful shutdown、**沒有** 排水 → 換手瞬間連線被硬斷。
 
@@ -32,7 +32,7 @@ alias k='kubectl --context kind-zdt -n zdt-tour'
 ## 1. 部署 step0
 
 ```sh
-kubectl --context kind-zdt apply -k deploy/step0-bare
+kubectl --context kind-zdt apply -k deploy/step0
 k rollout status deploy/hydra
 k rollout status deploy/client
 ```
@@ -73,7 +73,7 @@ oha 會即時顯示 QPS、狀態碼分佈與 latency。並發數 `-c`、時長 `
 k rollout restart deploy/hydra
 ```
 
-## 5. 預期現象(裸奔的代價)
+## 5. 預期現象(不處理的代價)
 
 - **右終端**:舊 `hydra-*` 幾乎瞬間 `Terminating` → 消失,新 pod `ContainerCreating` → `Running`;
   因為 `maxUnavailable=0`,總是先補新的再殺舊的。
@@ -95,5 +95,5 @@ k exec -it "$CLIENT" -- sh -c 'curl -N http://hydra.zdt-tour.svc.cluster.local/t
 ## 6. 清理
 
 ```sh
-kubectl --context kind-zdt delete -k deploy/step0-bare
+kubectl --context kind-zdt delete -k deploy/step0
 ```

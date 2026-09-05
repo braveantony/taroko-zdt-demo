@@ -17,7 +17,7 @@ pod 被換掉的那一刻,連線還開著、進度還在記憶體裡。關機處
 
 | 步驟 | 多加了什麼 | 使用者這時會看到什麼 |
 |---|---|---|
-| **step0** 裸奔 | 什麼都不做 | 連線瞬間斷掉、導覽進度歸零 |
+| **step0** | 什麼都不做 | 連線瞬間斷掉、導覽進度歸零 |
 | **step1** | preStop 緩衝 | 新請求不再打到即將關閉的 pod;但已開的連線最後還是會斷 |
 | **step2** | 程式優雅關機 | 一般 HTTP 請求會收完再結束;但 SSE 這種收不完的長連線仍會被切 |
 | **step3** | 連線排空(drain) | 瀏覽器先收到道別、乾淨重連;只是進度還會歸零 |
@@ -48,7 +48,7 @@ pod 被換掉的那一刻,連線還開著、進度還在記憶體裡。關機處
 sudo -v && ./infra/up.sh
 
 # 2. 部署 step0
-kubectl --context kind-zdt apply -k deploy/step0-bare
+kubectl --context kind-zdt apply -k deploy/step0
 ```
 
 環境細節見 [`infra/README.md`](infra/README.md);step0 逐步操作(跑壓測、觸發滾動更新、看連線怎麼被切斷)見 [`demo/step0.md`](demo/step0.md)。
