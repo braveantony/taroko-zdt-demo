@@ -1,0 +1,8 @@
+apiVersion: cilium.io/v2
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: l2-pool
+spec:
+  allowFirstLastIPs: "No"
+  blocks:
+    - cidr: 10.89.0.192/27
