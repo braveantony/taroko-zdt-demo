@@ -1,0 +1,54 @@
+# step0 裸奔:common 之上只疊「一個分散在不同 node 的 hydra Deployment」該有的東西
+# (nodeSelector 固定在 hydra tier、podAntiAffinity 分散、更新策略、關機時限、liveness),
+# 外加裸奔參數(graceful=off / 記憶體 / 不排水)。
+# 沒有 preStop、沒有 readiness、沒有 graceful → rollout 時 pod 瞬間死、SSE 連線硬斷、進度歸零。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../common
+
+patches:
+  - target: {kind: Deployment, name: hydra}
+    patch: |-
+      # ── 固定跑在 hydra tier(w1-3),與 client(w4)分開 ──
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value: {tier: hydra}
+      # ── pod 分散在不同 node(podAntiAffinity;preferred 軟性,以免 rolling update
+      #    的 surge pod 因為只有 3 個 hydra worker 而卡住) ──
+      - op: add
+        path: /spec/template/spec/affinity
+        value:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector: {matchLabels: {app: hydra}}
+                  topologyKey: kubernetes.io/hostname
+      # ── 更新策略:先起新、後刪舊,容量不下降 ──
+      - op: add
+        path: /spec/strategy
+        value:
+          type: RollingUpdate
+          rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+      # ── 關機時限(SIGTERM → SIGKILL 預算) ──
+      - op: add
+        path: /spec/template/spec/terminationGracePeriodSeconds
+        value: 30
+      # ── liveness(裸奔仍保留健康檢查,掛了會重啟) ──
+      - op: add
+        path: /spec/template/spec/containers/0/livenessProbe
+        value:
+          httpGet: {path: /healthz, port: http}
+          periodSeconds: 10
+          failureThreshold: 3
+          timeoutSeconds: 1
+      # ── 裸奔參數:收 SIGTERM 立即死、進度存記憶體、不排水 ──
+      - op: add
+        path: /spec/template/spec/containers/0/env
+        value:
+          - {name: HYDRA_GRACEFUL, value: "off"}
+          - {name: HYDRA_STATE_BACKEND, value: memory}
+          - {name: HYDRA_SSE_DRAIN, value: "off"}
+          - {name: HYDRA_TOUR_INTERVAL_SECONDS, value: "10"}

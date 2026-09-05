@@ -1,0 +1,43 @@
+# hydra 最陽春 base — 只留「pod 跑得起來」的必需,所有 demo 機制(strategy、tGPS、
+# pod 分散/nodeSelector、preStop、readiness、liveness、shutdown 參數)都由各 step overlay 自己疊。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hydra
+  labels:
+    app: hydra
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: hydra
+  template:
+    metadata:
+      labels:
+        app: hydra
+    spec:
+      # Service 名 hydra → kubelet 注入 HYDRA_PORT=tcp://…(service links),
+      # 與程式的 HYDRA_PORT 整數設定相撞 → 啟動中止;關掉遺產式注入
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        # distroless 的 USER nonroot 是字串,kubelet 無法據以驗證 runAsNonRoot
+        # (CreateContainerConfigError)— 必須以數字 uid 明示
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: hydra
+          image: ghcr.io/braveantony/hydra:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

@@ -1,0 +1,11 @@
+# demo 共用層:namespace zdt-tour + hydra 陽春 base + 壓測 client。
+# 各 step overlay 以此為 base,只 patch hydra 的機制差異(相鄰步 diff = 一個機制)。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: zdt-tour
+
+resources:
+  - namespace.yaml
+  - ../base
+  - client.yaml

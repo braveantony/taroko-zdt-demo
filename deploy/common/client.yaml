@@ -1,0 +1,41 @@
+# 壓測 client:常駐 loadtest image(內含 oha + curl),固定跑在 client tier(w4),
+# 與 hydra(w1-3)分開。demo 時 kubectl exec 進來跑 oha 打 hydra Service,
+# 觀察 rolling update 下的連線存亡。壓測由 exec 觸發,平時 sleep infinity。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client
+  labels:
+    app: client
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: client
+  template:
+    metadata:
+      labels:
+        app: client
+    spec:
+      enableServiceLinks: false
+      nodeSelector:
+        tier: client
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: loadtest
+          # TARGET 預設 http://hydra.zdt-tour.svc.cluster.local/version(已烘進 image)
+          image: ghcr.io/braveantony/loadtest:latest
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            # 便於 demo 時 exec 跑各種臨時工具,client 不設唯讀根檔系統
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: [ALL]
