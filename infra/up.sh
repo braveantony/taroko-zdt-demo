@@ -1,20 +1,27 @@
 #!/usr/bin/env bash
 # 一鍵建立 taroko-zdt-demo 的 kind + Cilium + L2 叢集。
 # 對應 README 步驟 1–6(podman 網路 → kind → kubeconfig → Gateway API CRD → Cilium → L2)。
-# 用法: sudo -v; ./up.sh        (會用到 sudo podman;先 sudo -v 免中途卡密碼)
+# 前置:先用工具箱把 kind/kubectl/cilium 裝到 ~/.local/bin(見 infra/tools),再 helm 自備。
+# 用法: sudo -v; ./up.sh
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PATH="$HOME/.local/bin:$PATH"   # 工具箱把 kind/kubectl/cilium 裝在這
 K="kubectl --context kind-kind"
 CILIUM_VERSION="1.20.1"
 GWAPI_VERSION="v1.6.1"
-KIND="sudo KIND_EXPERIMENTAL_PROVIDER=podman"
+
+# kind 在 ~/.local/bin,但 sudo 的 secure_path 找不到 → 解析絕對路徑、用 sudo env 帶進去
+KIND_BIN="$(command -v kind || echo "$HOME/.local/bin/kind")"
+[ -x "$KIND_BIN" ] || { echo "✗ 找不到 kind。先用工具箱裝:"; echo "    sudo podman run --rm -v \"\$HOME/.local/bin:/out\" ghcr.io/braveantony/taroko-tools"; exit 1; }
+command -v helm >/dev/null || { echo "✗ 找不到 helm,請先安裝 helm。"; exit 1; }
+kind_run(){ sudo env KIND_EXPERIMENTAL_PROVIDER=podman KIND_EXPERIMENTAL_PODMAN_NETWORK=kind "$KIND_BIN" "$@"; }
 
 log(){ printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 
 # ── 0. 叢集已存在就先擋下 ────────────────────────────────
-if $KIND kind get clusters 2>/dev/null | grep -qx kind; then
-  echo "叢集 kind 已存在。要重建請先執行 ./down.sh(或 $KIND kind delete cluster --name kind)。"
+if kind_run get clusters 2>/dev/null | grep -qx kind; then
+  echo "叢集 kind 已存在。要重建請先執行 ./down.sh。"
   exit 1
 fi
 
@@ -32,12 +39,12 @@ esac
 
 # ── 2. 建叢集 ────────────────────────────────────────────
 log "2/6 kind create cluster (1 control + 4 worker)"
-$KIND KIND_EXPERIMENTAL_PODMAN_NETWORK=kind kind create cluster --config "$HERE/kind.yaml"
+kind_run create cluster --config "$HERE/kind.yaml"
 
 # ── 3. 合併 kubeconfig 到 ~/.kube/config ────────────────
 log "3/6 kubeconfig"
 tmp="$(mktemp)"
-$KIND kind get kubeconfig --name kind > "$tmp"
+kind_run get kubeconfig --name kind > "$tmp"
 KUBECONFIG="$HOME/.kube/config:$tmp" kubectl config view --flatten > "$HOME/.kube/config.new"
 mv "$HOME/.kube/config.new" "$HOME/.kube/config" && chmod 600 "$HOME/.kube/config" && rm -f "$tmp"
 
