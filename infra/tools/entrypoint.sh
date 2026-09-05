@@ -8,10 +8,10 @@ if [ ! -d "$OUT" ]; then
   echo "✗ 請把 host 目錄掛載到 $OUT,例如:  -v \"\$HOME/.local/bin:/out\""
   exit 1
 fi
-for t in kind kubectl cilium; do
+for t in kind kubectl cilium helm; do
   cp -f "/tools/$t" "$OUT/$t"
   chmod 0755 "$OUT/$t"
   echo "  ✓ $OUT/$t"
 done
-echo "已安裝 → kind $KIND_VERSION · kubectl $KUBECTL_VERSION · cilium-cli $CILIUM_CLI_VERSION"
+echo "已安裝 → kind $KIND_VERSION · kubectl $KUBECTL_VERSION · cilium-cli $CILIUM_CLI_VERSION · helm $HELM_VERSION"
 echo "確認 ~/.local/bin 有在 PATH 裡(bash: 'export PATH=\$HOME/.local/bin:\$PATH')。"
