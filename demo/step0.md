@@ -23,24 +23,26 @@
 - kind + Cilium 叢集就緒(見 [`infra/`](../infra/),`./infra/up.sh`),context = `kind-zdt`。
 - 三個 GHCR image 皆已設為 **Public**:`hydra`、`loadtest`、`taroko-tools`。
 
-方便起見,先設個別名(帶上 context 與 namespace):
+下面每條指令都自帶 `--context kind-zdt -n zdt-tour`,任意開幾個終端、複製貼上就能跑,不依賴任何 shell 別名或環境設定。
 
-```sh
-alias k='kubectl --context kind-zdt -n zdt-tour'
-```
+> 嫌指令太長,可先把 namespace 綁到這個 context(寫進 `~/.kube/config`,對所有終端生效),之後就能省略每條的 `-n zdt-tour`:
+>
+> ```sh
+> kubectl config set-context kind-zdt --namespace=zdt-tour
+> ```
 
 ## 1. 部署 step0
 
 ```sh
 kubectl --context kind-zdt apply -k deploy/step0
-k rollout status deploy/hydra
-k rollout status deploy/client
+kubectl --context kind-zdt -n zdt-tour rollout status deploy/hydra
+kubectl --context kind-zdt -n zdt-tour rollout status deploy/client
 ```
 
 ## 2. 確認 pod 分散在不同 node
 
 ```sh
-k get pods -o wide
+kubectl --context kind-zdt -n zdt-tour get pods -o wide
 ```
 
 預期:3 個 `hydra-*` 各據一台 hydra tier 的 worker(`zdt-worker` / `zdt-worker2` / `zdt-worker3`),
@@ -57,8 +59,8 @@ watch -n1 'kubectl --context kind-zdt -n zdt-tour get pods -o wide'
 **左終端 —— 從 client pod 內用 oha 持續壓測 hydra Service:**
 
 ```sh
-CLIENT=$(k get pod -l app=client -o jsonpath='{.items[0].metadata.name}')
-k exec -it "$CLIENT" -- sh -c 'oha -z 120s -c 20 --disable-keepalive "$TARGET"'
+kubectl --context kind-zdt -n zdt-tour exec -it deploy/client -- \
+  sh -c 'oha -z 120s -c 20 --disable-keepalive "$TARGET"'
 ```
 
 `$TARGET` 已烘進 image(`http://hydra.zdt-tour.svc.cluster.local/version`)。
@@ -70,23 +72,29 @@ oha 會即時顯示 QPS、狀態碼分佈與 latency。並發數 `-c`、時長 `
 壓測跑著的同時,另開一個終端:
 
 ```sh
-k rollout restart deploy/hydra
+kubectl --context kind-zdt -n zdt-tour rollout restart deploy/hydra
 ```
 
 ## 5. 預期現象(不處理的代價)
 
 - **右終端**:舊 `hydra-*` 幾乎瞬間 `Terminating` → 消失,新 pod `ContainerCreating` → `Running`;
   因為 `maxUnavailable=0`,總是先補新的再殺舊的。
-- **左終端**:oha 統計會在每次換手瞬間冒出 **非 2xx / connection error**(數量不多但看得到)——
-  step0 收到 SIGTERM 立即結束,沒有 preStop 緩衝、沒有排水,in-flight 連線被硬斷。
-- 這些 error 就是 step1–4 要一步步消滅的東西。
+- **左終端**:oha 的 **Error distribution** 會在每次換手瞬間冒出連線層錯誤——
+  `Connection refused`、`Connection reset by peer`、`connection closed before message completed`。
+
+  注意這些**不會**出現在右上角的 **Status code distribution**(那裡仍是清一色 `[200]`)。
+  因為 step0 收到 SIGTERM 直接把 process 殺掉,請求的連線根本沒拿到 HTTP 回應就斷了——
+  沒有回應,自然沒有狀態碼可歸類。這正是「硬斷」:失敗發生在**連線層**,而不是一個收得好好的 `503`。
+- 這些連線錯誤就是 step1–4 要一步步消滅的東西:到 step2 的優雅關機,請求會被好好收完;
+  到 step3 的排空,SSE 會先收到 `bye` 再乾淨重連。
 
 ### (選用)直接看 SSE 連線被硬斷
 
 hydra 的導覽事件流是長連線,最能體現「連線存亡」。另開終端掛一條 SSE:
 
 ```sh
-k exec -it "$CLIENT" -- sh -c 'curl -N http://hydra.zdt-tour.svc.cluster.local/tour/events'
+kubectl --context kind-zdt -n zdt-tour exec -it deploy/client -- \
+  sh -c 'curl -N http://hydra.zdt-tour.svc.cluster.local/tour/events'
 ```
 
 跑 `rollout restart` 時,若這條流所在的 pod 被換掉,streaming 會**當場斷掉**(step0 不排水、不善終)。
