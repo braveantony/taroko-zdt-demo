@@ -1,0 +1,37 @@
+# hydra — 多階段建置:golang 編譯 → distroless static 執行(ADR-0004/0008、research.md R7)
+# digest 為 manifest-list digest(multi-arch 安全),2026-08-21 自 registry 解析
+
+FROM docker.io/library/golang:1.27.0@sha256:65b6f280bf050ec5af12716857e8ea8439d694dbba8f31ceeb7630670071f2bb AS builder
+
+WORKDIR /src
+
+# 相依先行:go.mod/go.sum 不變時,mod download 層直接吃快取
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+COPY cmd/ cmd/
+COPY internal/ internal/
+
+# VERSION 只影響最後的編譯層,不會打斷上面的快取
+ARG VERSION=dev
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -trimpath \
+      -ldflags "-s -w -X gitlab.com/kubeantony/kubernetes-summit-2026/internal/version.Version=${VERSION}" \
+      -o /out/hydra ./cmd/hydra
+
+# 執行階段:無 shell、無套件管理器;preStop 因此必須用 K8s 原生 sleep action(ADR-0004)
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:1b7b9f0f0e0a1d2155f531db587cc48ec26aaf97ab64364225f5bf18a054e66a
+
+LABEL org.opencontainers.image.title="hydra" \
+      org.opencontainers.image.description="Zero-downtime demo HTTP server (Kubernetes Summit 2026)" \
+      org.opencontainers.image.source="https://gitlab.com/kubeantony/kubernetes-summit-2026"
+
+COPY --from=builder /out/hydra /hydra
+
+EXPOSE 8080
+USER nonroot:nonroot
+
+# exec form:PID 1 = hydra,SIGTERM 直達(FR-010);K8s 以 probes 取代 HEALTHCHECK
+ENTRYPOINT ["/hydra"]

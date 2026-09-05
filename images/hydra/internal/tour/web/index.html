@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>太魯閣線上導覽</title>
+<style>
+  :root{
+    --ink:#10151a;          /* 峽谷夜色 */
+    --marble:#e9e6e0;       /* 大理岩霧白 */
+    --river:#3aa8a0;        /* 立霧溪藍綠 */
+    --amber:#d9a441;        /* 換班琥珀 */
+    --alert:#c94f4f;        /* 斷線紅 */
+    --scrim:rgba(8,12,16,.78);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--ink);color:var(--marble);
+    font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+    overflow:hidden;
+  }
+  .mono{font-family:ui-monospace,"SF Mono",Consolas,"Courier New",monospace}
+
+  /* ── 照片層:雙層交叉淡入 ── */
+  .stage{position:fixed;inset:0}
+  .stage img{
+    position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+    opacity:0;transition:opacity 1.2s ease;
+  }
+  .stage img.show{opacity:1}
+  @media (prefers-reduced-motion:reduce){.stage img{transition:none}}
+
+  /* ── 頂欄:品牌 + 站務牌 ── */
+  .topbar{
+    position:fixed;top:0;left:0;right:0;z-index:3;
+    display:flex;justify-content:space-between;align-items:flex-start;
+    padding:20px 24px;
+    background:linear-gradient(rgba(8,12,16,.65),transparent);
+  }
+  .brand{font-size:14px;letter-spacing:.35em;font-weight:500;opacity:.92}
+  .brand b{color:var(--river);font-weight:700}
+
+  /* signature:站務牌 — 連線狀態即敘事 */
+  .badge{
+    display:flex;align-items:center;gap:10px;
+    padding:8px 14px;border:1px solid var(--river);border-radius:4px;
+    background:rgba(8,12,16,.72);font-size:13px;
+    transition:border-color .3s,box-shadow .3s;
+  }
+  .badge .dot{width:9px;height:9px;border-radius:50%;background:var(--river)}
+  .badge .state{letter-spacing:.12em}
+  .badge[data-state="live"]{border-color:var(--river);box-shadow:0 0 12px rgba(58,168,160,.35)}
+  .badge[data-state="live"] .dot{background:var(--river)}
+  .badge[data-state="reconnecting"]{border-color:var(--amber);box-shadow:0 0 14px rgba(217,164,65,.45)}
+  .badge[data-state="reconnecting"] .dot{background:var(--amber);animation:pulse 1s infinite}
+  .badge[data-state="dead"]{border-color:var(--alert);box-shadow:0 0 14px rgba(201,79,79,.5)}
+  .badge[data-state="dead"] .dot{background:var(--alert)}
+  @keyframes pulse{50%{opacity:.25}}
+  @media (prefers-reduced-motion:reduce){.badge .dot{animation:none}}
+
+  /* ── 底部資訊層 ── */
+  .panel{
+    position:fixed;left:0;right:0;bottom:0;z-index:3;
+    padding:120px 32px 24px;
+    background:linear-gradient(transparent,rgba(8,12,16,.5) 32%,var(--scrim) 62%);
+  }
+  .eyebrow{
+    font-size:13px;letter-spacing:.3em;text-transform:uppercase;
+    color:var(--river);margin-bottom:6px;
+    text-shadow:0 1px 6px rgba(0,0,0,.85);
+  }
+  h1#station-name{
+    font-size:clamp(28px,5vw,52px);font-weight:700;line-height:1.15;
+    text-shadow:0 2px 12px rgba(0,0,0,.6);
+  }
+  p#station-desc{
+    max-width:60ch;margin-top:10px;font-size:15px;line-height:1.75;
+    font-weight:300;opacity:.95;
+  }
+  .meta{
+    display:flex;flex-wrap:wrap;align-items:center;gap:18px;
+    margin-top:18px;font-size:13px;
+  }
+  .dots{display:flex;gap:7px}
+  .dots i{
+    width:26px;height:5px;border-radius:2px;
+    background:rgba(233,230,224,.28);transition:background .4s;
+  }
+  .dots i.on{background:var(--river)}
+  #progress{opacity:.9}
+  #credit{margin-left:auto;opacity:.6;font-size:12px}
+
+  /* ── 起始封面 ── */
+  .cover{
+    position:fixed;inset:0;z-index:5;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:26px;text-align:center;
+    background:radial-gradient(ellipse at 50% 40%,rgba(24,34,40,.92),var(--ink) 75%);
+    padding:24px;
+  }
+  .cover .eyebrow{margin-bottom:0}
+  .cover h2{font-size:clamp(30px,6vw,56px);font-weight:700;letter-spacing:.08em}
+  .cover p{font-weight:300;opacity:.75;max-width:44ch;line-height:1.8;font-size:15px}
+  #start{
+    margin-top:8px;padding:14px 44px;font-size:16px;letter-spacing:.25em;
+    color:var(--ink);background:var(--river);border:none;border-radius:4px;
+    cursor:pointer;font-weight:700;font-family:inherit;
+  }
+  #start:hover{filter:brightness(1.1)}
+  #start:focus-visible{outline:3px solid var(--marble);outline-offset:3px}
+  [hidden]{display:none!important}
+</style>
+</head>
+<body>
+
+<div class="stage" aria-hidden="true">
+  <img id="photo" alt="">
+  <img id="photo-alt" alt="">
+</div>
+
+<header class="topbar">
+  <div class="brand">太魯閣 <b>TAROKO</b> 線上導覽</div>
+  <div class="badge mono" id="conn-light" data-state="dead" role="status">
+    <span class="dot" aria-hidden="true"></span>
+    <span class="state" id="conn-text">未連線</span>
+    <span aria-hidden="true">·</span>
+    <span id="pod-name">—</span>
+  </div>
+</header>
+
+<main class="panel">
+  <div class="eyebrow" id="station-en">TAROKO NATIONAL PARK</div>
+  <h1 id="station-name">準備出發</h1>
+  <p id="station-desc">導覽精靈將帶你走訪立霧溪畔的七個景點。</p>
+  <div class="meta">
+    <div class="dots" id="dots" aria-hidden="true"></div>
+    <span id="progress" class="mono">— / 7</span>
+    <span id="credit"></span>
+  </div>
+</main>
+
+<div class="cover" id="cover">
+  <div class="eyebrow">TAROKO NATIONAL PARK · LIVE TOUR</div>
+  <h2>太魯閣線上導覽</h2>
+  <p>由導覽精靈自動帶路,沿立霧溪深入大理岩峽谷——七站風景,每站停留片刻。<br>右上角的站務牌會告訴你:是哪一個 pod 正在為你服務。</p>
+  <button id="start">開始導覽</button>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var TOTAL = 7;
+  var dots = document.getElementById("dots");
+  for (var i = 0; i < TOTAL; i++) dots.appendChild(document.createElement("i"));
+
+  var photoA = document.getElementById("photo");
+  var photoB = document.getElementById("photo-alt");
+  var front = photoA; // 目前顯示層
+  var badge = document.getElementById("conn-light");
+  var connText = document.getElementById("conn-text");
+  var es = null;
+
+  function setLight(state, text){
+    badge.dataset.state = state;
+    connText.textContent = text;
+  }
+  function setProgress(seq, phase){
+    var kids = dots.children;
+    for (var i = 0; i < kids.length; i++) kids[i].className = i < seq ? "on" : "";
+    document.getElementById("progress").textContent =
+      phase === "announce" ? "導覽結束 · 園區公告" : seq + " / " + TOTAL;
+  }
+  function swapPhoto(src, alt){
+    var back = front === photoA ? photoB : photoA;
+    back.onload = function(){
+      back.classList.add("show");
+      front.classList.remove("show");
+      front = back;
+    };
+    back.src = src;
+    back.alt = alt;
+  }
+
+  function connect(){
+    es = new EventSource("/tour/events");
+
+    es.onopen = function(){ setLight("live", "導覽中"); };
+    es.onerror = function(){ setLight("reconnecting", "重連中"); };
+
+    es.addEventListener("hello", function(e){
+      var d = JSON.parse(e.data);
+      document.getElementById("pod-name").textContent = d.pod;
+      setProgress(d.seq, d.phase);
+      setLight("live", "導覽中");
+    });
+
+    es.addEventListener("station", function(e){
+      var d = JSON.parse(e.data);
+      document.getElementById("station-en").textContent = d.name_en;
+      document.getElementById("station-name").textContent = d.name;
+      document.getElementById("station-desc").textContent = d.desc;
+      document.getElementById("credit").textContent =
+        "攝影:" + d.credit + "(" + d.license + ",Wikimedia Commons)";
+      swapPhoto(d.photo, d.name);
+      setProgress(d.seq, "touring");
+    });
+
+    es.addEventListener("notice", function(e){
+      var d = JSON.parse(e.data);
+      document.getElementById("station-en").textContent = "PARK ANNOUNCEMENT";
+      document.getElementById("station-name").textContent = "園區公告";
+      document.getElementById("station-desc").textContent = d.text;
+      setProgress(TOTAL, "announce");
+    });
+
+    es.addEventListener("bye", function(){
+      // 導覽員換班:掛線交給 EventSource 原生重連,這裡只換燈
+      setLight("reconnecting", "導覽員換班中");
+    });
+  }
+
+  document.getElementById("start").addEventListener("click", function(){
+    document.getElementById("cover").hidden = true;
+    connect();
+  });
+})();
+</script>
+</body>
+</html>
