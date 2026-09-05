@@ -4,7 +4,8 @@ kind + Cilium 1.20.1 native routing + L2 announcement
 
 | 檔案 | 用途 |
 |---|---|
-| `kind.yaml` | 3 節點，無 CNI、無 kube-proxy |
+| `kind.yaml` | 1 control-plane + 4 worker（w1–3 `tier=hydra`、w4 `tier=client`），無 CNI、無 kube-proxy |
+| `tools/` | 工具箱 image：把對應版本的 kind/kubectl/cilium/helm 裝到 `~/.local/bin` |
 | `cilium/values.yaml` | Cilium Helm values |
 | `l2/lb-pool.yaml` | LB-IPAM pool `10.89.0.192/27` |
 | `l2/l2-policy.yaml` | worker eth0 宣告 LoadBalancer IP |
@@ -14,39 +15,39 @@ kind + Cilium 1.20.1 native routing + L2 announcement
 
 | 用途 | CIDR |
 |---|---|
-| podman 網路 `kind`（節點，步驟 1 固定建立） | 10.89.0.0/24 |
+| podman 網路 `zdt`（節點，步驟 1 固定建立） | 10.89.0.0/24 |
 | Pod | 10.244.0.0/16 |
 | LoadBalancer IP | 10.89.0.192/27 |
 
 ## 版本
 
-kind v0.32.0（podman provider）、kindest/node v1.36.1、Cilium 1.20.1、Gateway API v1.6.1
+kind v0.32.0（podman provider）、kindest/node v1.36.1、Cilium 1.20.1、Gateway API v1.6.1、helm v3.21.4（版本由 `tools/` 工具箱鎖定）
 
 ## 步驟
 
 ```sh
 cd ~/infra
-K="kubectl --context kind-kind"
+K="kubectl --context kind-zdt"
 ```
 
 1. 建立 podman 網路（固定網段，LB pool 依賴此段）
 
    ```sh
-   sudo podman network exists kind || sudo podman network create --driver bridge --subnet 10.89.0.0/24 --gateway 10.89.0.1 kind
-   sudo podman network inspect kind --format '{{range .Subnets}}{{.Subnet}} {{end}}'   # 必須是 10.89.0.0/24
+   sudo podman network exists zdt || sudo podman network create --driver bridge --subnet 10.89.0.0/24 --gateway 10.89.0.1 zdt
+   sudo podman network inspect zdt --format '{{range .Subnets}}{{.Subnet}} {{end}}'   # 必須是 10.89.0.0/24
    ```
 
 2. 建立叢集
 
    ```sh
-   sudo KIND_EXPERIMENTAL_PROVIDER=podman KIND_EXPERIMENTAL_PODMAN_NETWORK=kind kind create cluster --config kind.yaml
+   sudo KIND_EXPERIMENTAL_PROVIDER=podman KIND_EXPERIMENTAL_PODMAN_NETWORK=zdt kind create cluster --config kind.yaml
    ```
 
 3. 合併 kubeconfig
 
    ```sh
    tmp=$(mktemp)
-   sudo KIND_EXPERIMENTAL_PROVIDER=podman kind get kubeconfig --name kind > "$tmp"
+   sudo KIND_EXPERIMENTAL_PROVIDER=podman kind get kubeconfig --name zdt > "$tmp"
    KUBECONFIG="$HOME/.kube/config:$tmp" kubectl config view --flatten > ~/.kube/config.new
    mv ~/.kube/config.new ~/.kube/config && chmod 600 ~/.kube/config && rm "$tmp"
    ```
@@ -64,10 +65,10 @@ K="kubectl --context kind-kind"
 
    ```sh
    helm repo add cilium https://helm.cilium.io/ && helm repo update
-   helm install cilium cilium/cilium --version 1.20.1 -n kube-system --kube-context kind-kind -f cilium/values.yaml
+   helm install cilium cilium/cilium --version 1.20.1 -n kube-system --kube-context kind-zdt -f cilium/values.yaml
    $K -n kube-system rollout status ds/cilium --timeout=15m
    $K wait --for=condition=Ready node --all --timeout=5m
-   cilium --context kind-kind status --wait
+   cilium --context kind-zdt status --wait
    ```
 
 6. L2 announcement
@@ -91,21 +92,22 @@ K="kubectl --context kind-kind"
 8. 更新 Cilium
 
    ```sh
-   helm upgrade cilium cilium/cilium --version 1.20.1 -n kube-system --kube-context kind-kind -f cilium/values.yaml
+   helm upgrade cilium cilium/cilium --version 1.20.1 -n kube-system --kube-context kind-zdt -f cilium/values.yaml
    $K -n kube-system rollout status ds/cilium --timeout=10m
    ```
 
 9. 拆除
 
    ```sh
-   sudo KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name kind
-   kubectl config delete-context kind-kind; kubectl config delete-cluster kind-kind; kubectl config delete-user kind-kind
+   sudo KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name zdt
+   kubectl config delete-context kind-zdt; kubectl config delete-cluster kind-zdt; kubectl config delete-user kind-zdt
    ```
 
 ## 注意
 
-- LB pool 必須在 podman `kind` 網路內；若已存在的 `kind` 網路不是 10.89.0.0/24，先 `sudo podman network rm kind` 重建，或同步改 `l2/lb-pool.yaml`。
+- LB pool 必須在 podman `zdt` 網路內；若已存在的 `zdt` 網路不是 10.89.0.0/24，先 `sudo podman network rm zdt` 重建，或同步改 `l2/lb-pool.yaml`。
 - 多個 pool 的 CIDR 不可重疊（重疊會 CONFLICTING）。
 - 多個 kind 叢集同時跑時：`sudo sysctl -w fs.inotify.max_user_instances=1024 fs.inotify.max_user_watches=1048576`
 - 改 Pod CIDR 需 `kubectl patch ciliumpodippool default`，helm upgrade 不會更新既有 pool。
-- 叢集改名時 `k8sServiceHost` 要改成 `<name>-control-plane`。
+- 本 repo 叢集名為 `zdt`，故 `cilium/values.yaml` 的 `k8sServiceHost` 設為 `zdt-control-plane`；若改叢集名，要同步改成 `<新名>-control-plane`。
+- 一鍵起停：`./up.sh`（步驟 1–6）、`./down.sh`（步驟 9）；叢集名／網路名由腳本內 `CLUSTER="zdt"` 統一控制。
