@@ -145,18 +145,50 @@ Error distribution:
 15 秒預算,`/slow=10` 全收得完。`aborted due to deadline` 一樣是 5:它跟關機無關,純粹是 oha `-z 60s` 到點時
 卡住的那批,兩組都相同。
 
-### 那 keep-alive 呢?不是會一直把流量灌進要走的 pod?
+### keep-alive 為什麼要開?開/關的實測差異
 
-會,而且**兩組都一樣灌**——這點很容易誤會,講清楚:preStop 那 15 秒 pod 還活著,keep-alive 連線一直釘在
-它身上、oha 照灌 `/slow=10`。差別不在「有沒有灌」,而在**灌進來的請求收不收得完**:
+**先搞清楚一件事:關機時,卡在 SIGTERM 那一刻的請求,會被誰砍?** 有兩個死線,誰先到算誰(都從 pod
+進 `Terminating` 起算):
 
-- **tGPS=20**:SIGTERM 後 graceful 只剩 5 秒 → 在途的 `/slow=10`(要 10 秒)撐不到,tGPS 一到就 SIGKILL 硬砍 → 5 條 `connection closed`。
-- **tGPS=45**:SIGTERM 後有滿 15 秒 → 同一批在途 `/slow=10` 全收得完。`Shutdown` 會等它們跑完,同時對 SIGTERM 之後的新請求回 `Connection: close`(新流量改打新 pod)→ 0 條被砍。
+- **shutdown 上限**:SIGTERM 之後,程式最多再等 15 秒把手上請求收完 → 第 15(preStop)+ 15 = **第 30 秒**,收不完程式自己剪線。
+- **tGPS 的 SIGKILL**:第 tGPS 秒(20 或 45)一到,強制砍,不管收完沒。
 
-換句話說,`seconds=10 < shutdown 上限 15` 這個刻意的選法,讓 keep-alive 灌進來的流量**一定收得完**,
-keep-alive 就干擾不了實驗——**tGPS 才是唯一變因**。這也正是這裡用 10 秒、不用 20 秒的原因:20 秒 > shutdown
-上限,keep-alive 灌進來的會撐不完,「tGPS 太短」和「請求比 shutdown 上限還長」兩個效應就混在一起、分不清誰
-砍了誰。
+`/slow=10` 只要 10 秒,**比 shutdown 上限 15 短 → shutdown 那關一定過,能砍它的就只剩 tGPS**:tGPS=20 時
+preStop 15 之後只剩 5 秒 < 10 → SIGKILL 砍(5 條);tGPS=45 時還有 15 秒 > 10 → 收得完(0 條)。這就是上面
+兩組數據的由來。
+
+**keep-alive 在這裡幹嘛?** oha 的連線會黏在同一個 pod 上重複用。所以 preStop 那 15 秒,連線還釘在要走的
+pod 上、一個請求跑完立刻送下一個——**保證 SIGTERM 那一刻,pod 上一定卡著一個剛開跑的 `/slow=10`**,剛好頂
+到 tGPS 邊界,問題才演得出來。
+
+**那把 keep-alive 關掉呢?** 加 `--disable-keepalive` 後每個請求都開新連線;pod 一進 `Terminating`、endpoint
+被摘掉,新連線就不再進這顆 pod → SIGTERM 時 pod 上根本沒有卡著的請求(先前的早在 preStop 內就跑完)→ 就算
+tGPS=20 也砍不到東西。**關掉 keep-alive,反而看不到 tGPS 的問題。**
+
+實測對照(全部 `/slow=10`、`-c 5`、跑滿 60 秒、中途觸發一次 rollout):
+
+| tGPS | keep-alive | `connection closed` | 誰在砍 |
+|------|-----------|:-------------------:|--------|
+| 20 | 開(oha 預設) | **5** | tGPS(只剩 5 秒 < 10) |
+| 20 | 關(`--disable-keepalive`) | 待跑(預期 **0**) | 沒東西可砍 |
+| 45 | 開(oha 預設) | **0** | 都收得完 |
+
+驗證中間那列——跟上面 tGPS=20 一模一樣的跑法,**只多 `--disable-keepalive` 一個 flag**:
+
+```sh
+kubectl apply -k deploy/step2-badtgps      # 先回到 tGPS=20
+kubectl exec -it deploy/client -- \
+  sh -c 'oha -z 60s -c 5 --disable-keepalive "http://hydra.zdt-tour.svc.cluster.local/slow?seconds=10"'
+# 壓測跑著時,另開終端觸發:kubectl rollout restart deploy/hydra
+# 測完切回正解:            kubectl apply -k deploy/step2
+```
+
+> 這列跑完把 oha 貼給我補真實數字。預期 **0**——正好證明 keep-alive 是「把請求塞到關機邊界、逼出 tGPS 問題」
+> 的關鍵,tGPS 太短才是真兇,keep-alive 只是照出它的探照燈。
+
+**所以兩個條件缺一不可**:keep-alive 要**開**(才逼得出 tGPS 極限)、`/slow` 秒數要**壓在 shutdown 上限之下**
+(10 < 15,讓 shutdown 那關永遠過、tGPS 成為唯一變因)。先前打 `/slow=20`(> 15)壞就壞在後者:shutdown 上限
+先砍,連 tGPS=45 都斷,根本分不清是誰砍的。
 
 ## 觀察:graceful 撐到上限,但 SSE 還是斷
 
