@@ -23,6 +23,15 @@ if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 }
 ```
 
+**Go 官方怎麼定義 `Shutdown`**([`net/http` · Server.Shutdown](https://pkg.go.dev/net/http#Server.Shutdown)),四個要點:
+
+- **不中斷任何進行中的連線**(*without interrupting any active connections*)——在途 HTTP 請求會被好好收完,這就是 step2 的價值。
+- 動作順序:先關掉所有 listener(不再收新連線)→ 關閉閒置連線 → **等使用中的連線回到閒置**再收。
+- 傳入的 `context` 若在關完前逾時(這裡設 15 秒),`Shutdown` 回傳 context 的錯誤;程式據此 `Close()` 強制收尾。
+- **`Shutdown` 不會替你收「長生命週期」的連線**:官方以 hijacked 的 WebSocket 為例,明講要「由呼叫端自己通知這些連線關閉」。SSE 雖非 hijacked,但同樣永不回到閒置,`Shutdown` 只能一直等到逾時。
+
+所以 step2 的天花板正是最後這條:SSE 永不結束,`Shutdown` 等不到、只能撞 15 秒逾時被剪。要乾淨收掉它,得照官方說的「自己通知」——[step3](step3.md) 就是廣播 `bye`、主動收線。
+
 ## 這步的 Deployment 關鍵設定
 
 apply 之前先渲染出來看(只在本機組出 yaml,不碰叢集):
