@@ -13,6 +13,33 @@ kubelet 則執行 `preStop`,讓 process 先多活 15 秒再收到 SIGTERM。注�
 (app 本身仍不處理關機,`HYDRA_GRACEFUL=off`。distroless 沒有 shell,所以 preStop 用 K8s 原生的
 `sleep` action,不是 `exec` 跑 `sleep`。)
 
+## Pod 終止的時間軸
+
+preStop 只是這條時間軸上的第一段。一顆 pod 從「被判死刑」到「真的被殺」,是一段**有預算的流程**——
+K8s 叫它 **Termination Grace Period**(即 `terminationGracePeriodSeconds`,step1 是 30 秒):
+
+```mermaid
+flowchart LR
+    S(["Pod 進入 Terminating<br/>同時被摘出 endpoint"])
+    subgraph TGP["Termination Grace Period(tGPS = 30 秒,含 preStop)"]
+      direction LR
+      A["preStop hook 執行<br/>關機流程開始<br/>t = 0s"]
+      B["SIGTERM 送出<br/>t = 15s"]
+      C["SIGKILL 送出<br/>強制終止<br/>t = 30s"]
+      A -->|"sleep 15s"| B
+      B -->|"還有 15s grace 預算<br/>但 step1 裸奔 graceful=off<br/>app 立即死 exit 143,預算沒用到"| C
+    end
+    S --> A
+```
+
+- **t=0 preStop hook**:pod 一進 `Terminating` 就跑 preStop(這裡 `sleep 15s`),**同時**被摘出 Service endpoint。「關機流程」從這裡起算。
+- **t=15 SIGTERM**:preStop 結束後才送 SIGTERM。step1 裸奔(`graceful=off`),app 收到就立即死(exit 143)。
+- **t=30 SIGKILL**:tGPS 到點,不管 app 收完沒,一律強制殺。step1 的 app 早在 t=15 就死了,這一刀通常只是收屍。
+
+> 關鍵:**tGPS 包含 preStop**——preStop 吃掉的 15 秒是從這 30 秒裡扣的,不是額外加的。這條時間軸是後面每一步的
+> 基準:[step2](step2.md) 的 graceful 就是要用好 t=15 之後那段預算(並把 tGPS 加大到 45 才容得下),step3 再讓
+> SSE 在這段裡主動收線。
+
 ## 這步的 Deployment 關鍵設定
 
 apply 之前先渲染出來看(只在本機組出 yaml,不碰叢集):
