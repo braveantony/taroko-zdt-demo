@@ -66,11 +66,23 @@ kubectl rollout status deploy/hydra
 
 ## 觀察
 
-oha 打 `/version` 從 step1 起就已經乾淨(短請求換手 preStop 就蓋掉了),step2 也一樣。
-所以 step2 做了什麼、又卡在哪,要換個角度——用一條 **SSE 長連線** 才看得出來。
+oha 打 `/version` 從 step1 起就已經乾淨(短請求 preStop 就蓋掉了),step2 也一樣——所以要驗證
+step2 到底修好什麼,得看 step1 剪掉的那批**在途請求**(`/slow`),以及它的天花板 **SSE 長連線**。
 
-右終端照舊 `watch` pods,左終端的 oha 可以照 step1 繼續跑著(待會要對照)。再另開一個終端,
-在 client 內先拿 session cookie、再掛一條 SSE:
+右終端照舊盯 pod:
+
+```sh
+watch -n1 'kubectl get pods -o wide'
+```
+
+**(a) 重跑 step1 的 `/slow` 壓測**(和 step1 同一條指令,才好對照那 5 個 `connection closed`):
+
+```sh
+kubectl exec -it deploy/client -- \
+  sh -c 'oha -z 60s -c 5 "http://hydra.zdt-tour.svc.cluster.local/slow?seconds=20"'
+```
+
+**(b) 另開一個終端,掛一條 SSE**(先拿 session cookie、再連事件流),看 step2 的天花板:
 
 ```sh
 kubectl exec -it deploy/client -- sh -c \
@@ -78,7 +90,7 @@ kubectl exec -it deploy/client -- sh -c \
    curl -s -b /tmp/jar -N http://hydra.zdt-tour.svc.cluster.local/tour/events'
 ```
 
-會看到 `hello`、`station` 事件持續進來(留意 `pod` 欄位是哪一顆)。這時觸發滾動更新:
+會看到 `hello`、`station` 事件持續進來(留意 `pod` 欄位是哪一顆)。兩邊都跑著時,觸發滾動更新:
 
 ```sh
 kubectl rollout restart deploy/hydra
@@ -86,9 +98,10 @@ kubectl rollout restart deploy/hydra
 
 ## 預期現象
 
-- **oha `/version`**:維持 100%(和 step1 一樣乾淨)。graceful 對這種短請求看不出額外差別——
-  它真正收拾的是「較長、SIGTERM 到時還在處理」的在途請求;`/version` 太快,沒東西留給它收。
-  (偶爾的 `Connection refused` 是 step1 提過的啟動端缺口,step4 才補。)
+- **`/slow` 壓測**:step1 那 5 個 `connection closed before message completed` 應該歸零——graceful
+  會等在途 `/slow` 做完再退出(這些請求在 SIGTERM 時剩不到 15 秒,落在 shutdown 上限內)。
+  這就是 step2 收掉 step0 ② 的證據。(可能仍剩 `aborted due to deadline`,那是 `-z` 到點,不算問題;
+  `/version` 也照樣維持 100%,只是短請求本來就沒東西留給 graceful 收。)
 - **SSE 那條流**:它是永遠不會自己結束的長連線,app 的 Shutdown 等不到它,撞到 15 秒上限後被
   強制剪斷。從 pod 進入 `Terminating` 算起大約 **30 秒**(preStop 15 + shutdown 15)SSE 才斷——
   不是立刻,但**還是斷了**。對照 step1:那裡 SIGTERM 一到 app 立刻死、SSE 約 15 秒就斷;
