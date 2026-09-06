@@ -88,8 +88,8 @@ spec:
 - kind + Cilium 叢集就緒(見 [`infra/`](../infra/),`./infra/up.sh`)。
 - 三個 GHCR image 皆已設為 **Public**:`hydra`、`loadtest`、`taroko-tools`。
 
-先把 context 與 namespace 設好——這兩行寫進 `~/.kube/config`,對**所有終端**都有效
-(也順便解決 shell 別名不跨終端的問題),之後每條指令就不必再帶 `--context` 和 `-n`:
+先把 context 與 namespace 設好——這兩行寫進 `~/.kube/config`,對**所有終端機**都有效
+(也順便解決 shell 別名不跨終端機的問題),之後每條指令就不必再帶 `--context` 和 `-n`:
 
 ```sh
 kubectl config use-context kind-zdt                        # 設為目前 context
@@ -117,15 +117,15 @@ kubectl get pods -o wide
 預期:3 個 `hydra-*` 各據一台 hydra tier 的 worker(`zdt-worker` / `zdt-worker2` / `zdt-worker3`),
 `client-*` 落在 client tier 的 `zdt-worker4`。
 
-## 3. 開兩個終端觀察(所見即所跑)
+## 3. 開兩個終端機觀察(所見即所跑)
 
-**右終端 —— 盯 pod 變化:**
+**右終端機 —— 盯 pod 變化:**
 
 ```sh
 watch -n1 'kubectl get pods -o wide'
 ```
 
-**左終端 —— 從 client pod 內用 oha 持續壓測 hydra Service:**
+**左終端機 —— 從 client pod 內用 oha 持續壓測 hydra Service:**
 
 ```sh
 kubectl exec -it deploy/client -- \
@@ -138,7 +138,7 @@ oha 會即時顯示 QPS、狀態碼分佈與 latency。並發數 `-c`、時長 `
 
 ## 4. 觸發 rolling update
 
-壓測跑著的同時,另開一個終端:
+壓測跑著的同時,另開一個終端機:
 
 ```sh
 kubectl rollout restart deploy/hydra
@@ -146,9 +146,9 @@ kubectl rollout restart deploy/hydra
 
 ## 5. 預期現象(不處理的代價)
 
-- **右終端**:舊 `hydra-*` 幾乎瞬間 `Terminating` → 消失,新 pod `ContainerCreating` → `Running`;
+- **右終端機**:舊 `hydra-*` 幾乎瞬間 `Terminating` → 消失,新 pod `ContainerCreating` → `Running`;
   因為 `maxUnavailable=0`,總是先補新的再殺舊的。
-- **左終端**:oha 的 **Error distribution** 會在每次換手瞬間冒出連線層錯誤——
+- **左終端機**:oha 的 **Error distribution** 會在每次換手瞬間冒出連線層錯誤——
   `Connection refused`、`Connection reset by peer`、`connection closed before message completed`。
 
   注意這些**不會**出現在右上角的 **Status code distribution**(那裡仍是清一色 `[200]`)。
@@ -180,7 +180,7 @@ Error distribution:
 
 16 萬個請求、成功率 99.83%——而**成功的清一色是 `[200]`**,一個非 2xx 都沒有。代價全落在 **Error distribution**:連線層錯誤共 266 筆,絕大多數是 `Connection refused`(254 筆,新連線打到剛被殺、endpoint 還沒更新完的 pod),其餘是 `Connection reset` / `closed before message completed`(連線建好後 pod 中途死掉)。
 
-(另外那 4 個 `aborted due to deadline` 不是滾動更新造成的,是 `-z`(壓測時間)到點、還在跑的請求被中止。)
+(另外那 4 個 `aborted due to deadline` 不是滾動更新造成的,是 `-z`(壓測時間)一到、還在跑的請求被中止。)
 
 換句話說,step0 的失敗只會以「連線斷掉」的形式出現在 Error distribution,永遠不會變成一個收得好好的 HTTP 狀態碼。
 

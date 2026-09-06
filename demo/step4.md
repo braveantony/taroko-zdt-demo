@@ -5,7 +5,7 @@ step3 的問題:連線善終了,但進度存在 pod 的記憶體,pod 一換就�
 **這步加的**(相對 step3):
 
 - `HYDRA_STATE_BACKEND=valkey`:進度改存到外部的 Valkey(Redis 相容),所有 hydra pod 共用同一份。
-- 加上 `readinessProbe`(`/readyz`):app 啟動時先確認連得上 Valkey,連不上就直接退出(fail-fast);
+- 加上 `readinessProbe`(`/readyz`):app 啟動時先確認連得上 Valkey,連不上就直接結束(fail-fast);
   確認完成前 `/readyz` 不過,流量進不來。
   (註:`/readyz` 只反映「啟動完成、還沒開始關機」,不是持續探測 Valkey——啟動之後 Valkey 若掛掉,
   readiness 不會翻紅。)
@@ -16,7 +16,7 @@ Valkey 版的 StateStore 讀寫(所有 pod 共用同一個 Valkey),啟動時先 
 只有在啟動完成後才回 200:
 
 ```go
-// Run():valkey 後端啟動時先確認連得上,連不上就直接退出(不無聲降級為記憶體)
+// Run():valkey 後端啟動時先確認連得上,連不上就直接結束(不無聲降級為記憶體)
 if s.cfg.StateBackend == "valkey" {
     if err := s.store.Ping(pingCtx); err != nil {
         return fmt.Errorf("valkey 狀態庫不可用: %w", err)

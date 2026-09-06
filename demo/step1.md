@@ -5,9 +5,9 @@ step0 的問題:pod 一被殺,Service 的 endpoint 還沒更新完,新連線就�
 
 **這步加的**(相對 step0 的唯一差別):一段 15 秒的 `preStop` 緩衝。
 
-pod 進入終止流程時,兩件事同時開跑:控制面把它從 Service 的 endpoint 摘掉(標成 not-ready),
-kubelet 則執行 `preStop`,讓 process 先多活 15 秒再收到 SIGTERM。注意這是並行,不是「先摘掉、
-再等待」的保證順序——所以才需要這 15 秒:讓「這顆 pod 已摘掉」有時間傳到各節點的 datapath
+pod 進入終止流程時,兩件事同時開跑:控制面把它從 Service 的 endpoint 拿掉(標成 not-ready),
+kubelet 則執行 `preStop`,讓 process 先多活 15 秒再收到 SIGTERM。注意這是並行,不是「先拿掉、
+再等待」的保證順序——所以才需要這 15 秒:讓「這顆 pod 已拿掉」有時間傳到各節點的 datapath
 (kube-proxy,這裡是 Cilium),新連線就逐漸不會再打到它。
 
 (app 本身仍不處理關機,`HYDRA_GRACEFUL=off`。distroless 沒有 shell,所以 preStop 用 K8s 原生的
@@ -26,7 +26,7 @@ kubectl kustomize deploy/step1
 ```yaml
       containers:
       - name: hydra
-        lifecycle:                 # ← step1 新增:摘除 endpoint 後多撐 15 秒
+        lifecycle:                 # ← step1 新增:拿掉 endpoint 後多撐 15 秒
           preStop:
             sleep: {seconds: 15}
         # env(graceful=off / memory / drain=off)、livenessProbe、tGPS 30、
@@ -45,14 +45,14 @@ kubectl rollout status deploy/hydra
 
 ## 觀察
 
-沿用 [step0](step0.md) 的雙終端——右邊 `watch` 盯 pods、左邊在 client 內跑 oha:
+沿用 [step0](step0.md) 的雙終端機——右邊 `watch` 盯 pods、左邊在 client 內跑 oha:
 
 ```sh
 kubectl exec -it deploy/client -- \
   sh -c 'oha -z 60s -c 20 --disable-keepalive "$TARGET"'
 ```
 
-壓測跑著時,另開終端觸發滾動更新:
+壓測跑著時,另開終端機觸發滾動更新:
 
 ```sh
 kubectl rollout restart deploy/hydra
@@ -89,7 +89,7 @@ Error distribution:
 ```
 
 16 萬個請求、**100% 成功**,連線層錯誤掛零(那 7 個 `aborted due to deadline` 是 `-z`(壓測時間)
-到點、還在跑的請求被中止,與滾動更新無關)。step0 同樣的壓測有 266 個 `Connection refused` 等連線
+一到、還在跑的請求被中止,與滾動更新無關)。step0 同樣的壓測有 266 個 `Connection refused` 等連線
 錯誤,到 step1 直接歸零——這就是 preStop 對「短請求換手」的效果。
 
 ## 為什麼「做到一半的請求」還是會斷:背後的 code
@@ -120,7 +120,7 @@ step3 才乾淨收。這條 SSE 對照從 step2 開始跑。
 
 | # | 問題 | step1 狀態 | 證據 |
 |---|---|---|---|
-| ① | 新連線被拒(`Connection refused` / `connection error`) | ✅ **解決** | oha `/version` 從 step0 的 266 個錯誤 → **0(100% 成功)**;preStop 摘掉 endpoint,新連線不再打到將死的 pod |
+| ① | 新連線被拒(`Connection refused` / `connection error`) | ✅ **解決** | oha `/version` 從 step0 的 266 個錯誤 → **0(100% 成功)**;preStop 拿掉 endpoint,新連線不再打到將死的 pod |
 | ② | 請求做到一半 / 長連線被硬斷 | ❌ **沒解決** | 裸奔 app 收 SIGTERM 立即死(見上方 code);長連線最明顯——SSE 一到 SIGTERM 就斷 → **step2 / step3** |
 | ③ | 狀態隨 pod 消失(進度歸零) | ❌ **沒解決** | step1 沒碰狀態,仍存 pod 記憶體 → **step4** |
 

@@ -68,8 +68,8 @@ kubectl rollout restart deploy/hydra
 
 預期:SSE 流會先收到一個 `bye` 事件**才**關閉——是 server 主動、可預期地收線,不是硬斷。
 
-- 用 `curl` 看:收到 `bye` 後連線正常結束、指令跟著退出(curl 不會自動重連)。
-- 用瀏覽器看(想看導覽頁的話,另開終端 `kubectl port-forward svc/hydra 8080:80`,開 <http://localhost:8080/tour>):`EventSource` 收到連線結束會自動重連,燈號由「導覽員換班中」轉回「導覽中」。
+- 用 `curl` 看:收到 `bye` 後連線正常結束、指令跟著結束(curl 不會自動重連)。
+- 用瀏覽器看(想看導覽頁的話,另開終端機 `kubectl port-forward svc/hydra 8080:80`,開 <http://localhost:8080/tour>):`EventSource` 收到連線結束會自動重連,燈號由「導覽員換班中」轉回「導覽中」。
 
 重點不是「TCP 連線永不中斷」,而是中斷變得可預期。
 
