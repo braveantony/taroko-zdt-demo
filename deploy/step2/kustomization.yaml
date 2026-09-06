@@ -52,10 +52,12 @@ patches:
           failureThreshold: 3
           timeoutSeconds: 1
       # ── app 參數:優雅關機開啟(graceful=on),但仍不排空 SSE ──
+      # shutdown 上限明寫出來:它 + preStop 必須 ≤ terminationGracePeriodSeconds(見 tGPS=45)
       - op: add
         path: /spec/template/spec/containers/0/env
         value:
           - {name: HYDRA_GRACEFUL, value: "on"}
+          - {name: HYDRA_SHUTDOWN_TIMEOUT_SECONDS, value: "15"}
           - {name: HYDRA_STATE_BACKEND, value: memory}
           - {name: HYDRA_SSE_DRAIN, value: "off"}
           - {name: HYDRA_TOUR_INTERVAL_SECONDS, value: "10"}

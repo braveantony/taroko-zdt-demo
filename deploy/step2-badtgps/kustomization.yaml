@@ -1,0 +1,16 @@
+# 反例:step2 的設定沒搭配好——故意把 terminationGracePeriodSeconds 設成太短的 20
+# (< preStop 15 + shutdown 上限 15 = 30)。其餘完全沿用 step2。
+# 用途:apply -k 這個 → graceful 還沒收完就被 SIGKILL,演出「開了 graceful 卻形同虛設」;
+#       看完 apply -k deploy/step2 修回 45。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../step2
+
+patches:
+  - target: {kind: Deployment, name: hydra}
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/terminationGracePeriodSeconds
+        value: 20

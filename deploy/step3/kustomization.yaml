@@ -56,6 +56,7 @@ patches:
         path: /spec/template/spec/containers/0/env
         value:
           - {name: HYDRA_GRACEFUL, value: "on"}
+          - {name: HYDRA_SHUTDOWN_TIMEOUT_SECONDS, value: "15"}
           - {name: HYDRA_STATE_BACKEND, value: memory}
           - {name: HYDRA_SSE_DRAIN, value: "on"}
           - {name: HYDRA_TOUR_INTERVAL_SECONDS, value: "10"}
