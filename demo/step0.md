@@ -12,7 +12,7 @@
 ```go
 // internal/server/handlers.go:註冊路由(Go 1.22+ method pattern,以下略去 instrumented 包裝)
 s.mux.Handle("GET /version",     ...)  // 回版本字串
-s.mux.Handle("GET /slow",        ...)  // 停 N 秒才回應(step1 用它測在途請求)
+s.mux.Handle("GET /slow",        ...)  // 停 N 秒才回應(可製造在途請求)
 s.mux.Handle("GET /healthz",     ...)  // liveness
 s.mux.Handle("GET /readyz",      ...)  // readiness(step4 才真正派上用場)
 s.mux.Handle("GET /tour",        ...)  // 導覽頁
@@ -186,12 +186,12 @@ Error distribution:
 
 ## 盤點:step0 暴露了哪些問題
 
-step0 的 oha(打 `/version`、約 120 秒)收尾是 99.83% 成功——但那 266 個連線層錯誤,加上 `/slow`、SSE 兩個 `/version` 照不到的破口,才是重點。整理成三類,對應後面四步:
+step0 的 oha(打 `/version`、約 120 秒)收尾是 99.83% 成功——但那 266 個連線層錯誤,加上 `/version` 照不到的「長連線被斷」與「狀態歸零」,才是重點。整理成三類,對應後面四步:
 
 | # | 問題 | 在哪看到 | 根因 | 誰來補 |
 |---|---|---|---|---|
 | ① | **新連線被拒**(`Connection refused` ×254、`connection error` ×10) | oha `/version` | 沒 preStop:pod 秒殺,endpoint 還沒更新完新流量就打進來 | **step1** preStop |
-| ② | **在途連線被硬斷**(`Connection reset` / `connection closed before message completed`) | oha `/version` 只各冒 1 個;完整樣貌要用 `/slow`(step1 實測 5 個) | 沒 graceful:收 SIGTERM 立即死,手上的請求被剪 | **step2** graceful;長連線→**step3** drain |
+| ② | **在途 / 長連線被硬斷**(`Connection reset` / `connection closed before message completed`) | oha `/version` 只各冒 1 個;長連線(SSE)最明顯 | 沒 graceful:收 SIGTERM 立即死,手上的連線被剪 | **step2** graceful;長連線→**step3** drain |
 | ③ | **狀態隨 pod 消失**(導覽進度歸零) | 要掛 SSE 串流才看得到(見下方選用段) | 進度存 pod 記憶體,pod 一死就沒了 | **step4** valkey |
 
 (那 4 個 `aborted due to deadline` 不算問題,是壓測 `-z` 時間到的收尾。)

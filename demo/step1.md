@@ -92,75 +92,27 @@ Error distribution:
 到點、還在途的請求被中止,與滾動更新無關)。step0 同樣的壓測有 266 個 `Connection refused` 等連線
 錯誤,到 step1 直接歸零——這就是 preStop 對「短請求換手」的效果。
 
-## 用 /slow 看在途請求的破口
+## 為什麼「在途」還是會斷:背後的 code
 
-`/version` 太快,preStop 一擋就乾淨——所以它看不到 step1 真正的破口:**在途、還沒回應完的請求**。
-hydra 有個 `/slow?seconds=N` 端點會停 N 秒才回應(預設 3、上限 60),專門用來看這件事。
-
-要讓請求「SIGTERM 到時還在處理中」,`seconds` 得比 preStop(15 秒)長一點——用 20 秒,
-並發別開高(每條請求會佔著連線 20 秒):
-
-```sh
-# 左終端:持續打 /slow?seconds=20
-kubectl exec -it deploy/client -- \
-  sh -c 'oha -z 60s -c 5 "http://hydra.zdt-tour.svc.cluster.local/slow?seconds=20"'
-
-# 右終端:壓測跑著時,觸發滾動更新
-kubectl rollout restart deploy/hydra
-```
-
-### 實際輸出範例
-
-```text
-Summary:
-  Success rate: 66.67%
-  Total:        60.00 sec
-  Requests/sec: 0.3333
-
-Status code distribution:
-  [200] 10 responses
-
-Error distribution:
-  [5] connection closed before message completed
-  [5] aborted due to deadline
-```
-
-15 條有結論的請求裡(10 成功 + 5 失敗 = 66.67%),那 **5 條 `connection closed before message
-completed`** 就是「SIGTERM 到時還在處理」的 `/slow`——step1 裸奔的 app 立刻結束,server 還沒把
-回應送完就把連線關了。這正是 `/version` 遮掉、而 `/slow` 揪出來的破口:短請求看不到,慢請求一測就現形。
-
-**背後的 code**([`images/hydra/cmd/hydra/main.go`](../images/hydra/cmd/hydra/main.go)):`HYDRA_GRACEFUL=off`
-讓 main **不註冊** SIGTERM handler,收到 SIGTERM 就由 Go runtime 直接終止程序——在途 `/slow` 於是被硬斷:
+`/version` 乾淨,是因為它太快——preStop 那 15 秒早就讓它跑完了。但只要有請求在 **SIGTERM 真正送到時
+還沒回應完**(較長的在途請求,尤其是永不結束的 SSE 長連線),step1 就救不了。因為 app 是裸奔的:
+`HYDRA_GRACEFUL=off` 讓 main **不註冊** SIGTERM handler,收到 SIGTERM 直接由 Go runtime 終止程序,
+連線當場被剪:
 
 ```go
+// images/hydra/cmd/hydra/main.go
 signals := make(chan os.Signal, 2)
 if cfg.Graceful {
     signal.Notify(signals, syscall.SIGTERM, os.Interrupt)
 } else {
-    // 不註冊 handler → 收到 SIGTERM 由 Go runtime 直接終止程序(exit 143),
-    // 不 Shutdown、不等在途連線
+    // 不註冊 handler → 收到 SIGTERM 由 Go runtime 直接終止程序(exit 143),不 Shutdown、不等在途連線
     logger.Warn("graceful shutdown DISABLED — SIGTERM 將直接終止程序")
 }
 ```
 
-而 `/slow` 本身([`internal/server/handlers.go`](../images/hydra/internal/server/handlers.go))就是停 N 秒才回應、
-用來製造「在途請求」的端點:
-
-```go
-// GET /slow?seconds=N(預設 3、上限 60)
-timer := time.NewTimer(d)
-select {
-case <-timer.C:                 // 睡滿 N 秒 → 正常回應
-case <-r.Context().Done():      // 連線被關(pod 死/ client 斷)→ 提早結束
-    return
-}
-```
-
-(另外 5 條 `aborted due to deadline` 是 `-z 60s` 到點時還在途的請求,被壓測工具中止,不是 app 造成的;
-每條要 20 秒、又只有 5 併發,一分鐘總量本來就少。)
-
-到 [step2](step2.md) 打開 graceful 後,同一批在途 `/slow` 會被好好等完、回乾淨的 200,
-`connection closed` 就會消失。
+這種「在途 / 長連線被硬斷」最容易在 **SSE** 上看到——它一定黏在某顆 pod、一定在途。step1 下 SIGTERM
+一到,SSE 就被硬斷(約 `Terminating` 後 15 秒);到 [step2](step2.md) 的 graceful 會拖到約 30 秒(但仍斷),
+step3 才乾淨收。這條 SSE 對照從 step2 開始跑。
 
 ## 盤點:step1 解決了什麼、還沒解決什麼
 
@@ -169,10 +121,10 @@ case <-r.Context().Done():      // 連線被關(pod 死/ client 斷)→ 提早�
 | # | 問題 | step1 狀態 | 證據 |
 |---|---|---|---|
 | ① | 新連線被拒(`Connection refused` / `connection error`) | ✅ **解決** | oha `/version` 從 step0 的 266 個錯誤 → **0(100% 成功)**;preStop 摘掉 endpoint,新連線不再打到將死的 pod |
-| ② | 在途連線被硬斷 | ❌ **沒解決** | `/slow` 實測 5 個 `connection closed before message completed`——在途請求 SIGTERM 一到照樣被剪 → **step2** |
+| ② | 在途 / 長連線被硬斷 | ❌ **沒解決** | 裸奔 app 收 SIGTERM 立即死(見上方 code);長連線最明顯——SSE 一到 SIGTERM 就斷 → **step2 / step3** |
 | ③ | 狀態隨 pod 消失(進度歸零) | ❌ **沒解決** | step1 沒碰狀態,仍存 pod 記憶體 → **step4** |
 
-**有沒有新問題?** 沒有。`/slow` 冒出來的不是新的,是 step0 本來就有、但被 `/version`(短請求)遮住的 ②——preStop 清掉 ① 之後,② 才浮上檯面成為主角。
+**有沒有新問題?** 沒有。preStop 把短請求的錯誤清掉後,剩下的「在途 / 長連線被硬斷」是 step0 本來就有、只是被 `/version`(短請求)遮住的 ②,不是新問題。
 
 (兩個設計代價、不算錯誤:preStop 讓每顆 pod 關機多等 15 秒,整體 rollout 稍慢;另外 step0–3 都沒 `readinessProbe`,新 pod 有「還沒 `listen` 完就收流量」的理論破口,這輪沒觸發、到 step4 才補。)
 
