@@ -1,7 +1,7 @@
 # step1 +preStop:step0 之上多一段 preStop 緩衝(K8s 原生 sleep action;
 # distroless 無 shell,不能用 exec)。app 仍不處理關機(GRACEFUL=off)。
-# 效果:pod 進 Terminating 會先被摘除 endpoint,preStop 的 15 秒裡 app 還活著、
-#   新流量不再打進來、在途連線多撐一會。
+# 效果:pod 進入終止時,控制面開始把 endpoint 標成 not-ready、同時跑 preStop 讓 app 多活 15 秒
+#   (並行,非保證順序)——給 endpoint 移除在各節點 datapath 傳播的時間,新流量逐漸不再打進來。
 # 天花板:15 秒一到 SIGTERM 送達,app 仍是立刻結束、在途連線照樣硬斷。
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

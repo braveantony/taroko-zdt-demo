@@ -34,7 +34,9 @@ kubectl --context kind-zdt -n zdt-tour rollout restart deploy/hydra
 
 ## 預期現象
 
-- **oha `/version`**:Error distribution 幾乎歸零——在途的一般 HTTP 請求被優雅收完。
+- **oha `/version`**:關機端的 Error distribution 幾乎歸零——在途的一般 HTTP 請求被優雅收完。
+  (可能還會零星看到 `Connection refused`:step2 仍沒有 readinessProbe,新 pod 還沒 `listen`
+  完就可能被加進 Service;這個啟動缺口要到 step4 才補。)
 - **SSE 那條流**:它是永遠不會自己結束的長連線,`http.Server.Shutdown` 等不到它結束 →
   撞到 15 秒 shutdown 上限後被強制剪斷。你會看到 SSE 大約在關機 **15 秒後**才斷——
   不是立刻,但**還是斷了**。

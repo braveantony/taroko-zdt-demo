@@ -20,8 +20,10 @@ kubectl --context kind-zdt -n zdt-tour rollout status deploy/hydra
 kubectl --context kind-zdt -n zdt-tour rollout restart deploy/hydra
 ```
 
-預期:SSE 流會先收到一個 `bye` 事件**才**關閉(不是被硬剪),client/瀏覽器可以據此乾淨重連。
-連線層到這裡做到零停機了。
+預期:SSE 流會先收到一個 `bye` 事件**才**關閉。連線是被**可控地關閉**,而不是非預期硬斷——
+瀏覽器的 `EventSource` 收到連線結束會自動重連(頁面燈號會由「導覽員換班中」轉回「導覽中」);
+用 `curl` 觀察時不會自動重連,你會看到收到 `bye` 後連線正常結束、指令跟著退出。
+重點不是「TCP 連線永不中斷」,而是**中斷變成可控、可預期的**。
 
 ## 觀察二:進度還是掉了(這步的新問題)
 
@@ -35,8 +37,9 @@ kubectl --context kind-zdt -n zdt-tour exec -it deploy/client -- sh -c \
   'curl -s -c /tmp/jar http://hydra.zdt-tour.svc.cluster.local/tour >/dev/null &&
    curl -s -b /tmp/jar -N http://hydra.zdt-tour.svc.cluster.local/tour/events'
 
-# 2) 觸發滾動更新
+# 2) 觸發滾動更新,並等它換完(確保等下重連的是新 pod,而不是還沒被換掉的舊 pod)
 kubectl --context kind-zdt -n zdt-tour rollout restart deploy/hydra
+kubectl --context kind-zdt -n zdt-tour rollout status deploy/hydra
 
 # 3) 用同一個 cookie 重連,看 hello 事件的 seq
 kubectl --context kind-zdt -n zdt-tour exec -it deploy/client -- sh -c \

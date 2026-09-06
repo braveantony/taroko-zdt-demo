@@ -12,7 +12,7 @@
 | `strategy` | `maxUnavailable=0` / `maxSurge=1` | 先起新、後刪舊,容量不下降 |
 | `terminationGracePeriodSeconds` | `30` | SIGTERM → SIGKILL 的預算 |
 | `livenessProbe` | `GET /healthz` | 掛了會重啟 |
-| env | `HYDRA_GRACEFUL=off`、`STATE_BACKEND=memory`、`SSE_DRAIN=off` | step0 參數 |
+| env | `HYDRA_GRACEFUL=off`、`HYDRA_STATE_BACKEND=memory`、`HYDRA_SSE_DRAIN=off` | step0 參數 |
 
 **沒有** preStop、**沒有** readinessProbe、**沒有** graceful shutdown、**沒有** 排水 → 換手瞬間連線被硬斷。
 
@@ -117,11 +117,13 @@ Error distribution:
 
 ### (選用)直接看 SSE 連線被硬斷
 
-hydra 的導覽事件流是長連線,最能體現「連線存亡」。另開終端掛一條 SSE:
+hydra 的導覽事件流是長連線,最能體現「連線存亡」。`/tour/events` 需要帶 `hydra_session` cookie
+(否則回 400),所以先 `curl -c` 造訪 `/tour` 拿 cookie,再帶 `-b` 掛事件流:
 
 ```sh
-kubectl --context kind-zdt -n zdt-tour exec -it deploy/client -- \
-  sh -c 'curl -N http://hydra.zdt-tour.svc.cluster.local/tour/events'
+kubectl --context kind-zdt -n zdt-tour exec -it deploy/client -- sh -c \
+  'curl -s -c /tmp/jar http://hydra.zdt-tour.svc.cluster.local/tour >/dev/null &&
+   curl -s -N -b /tmp/jar http://hydra.zdt-tour.svc.cluster.local/tour/events'
 ```
 
 跑 `rollout restart` 時,若這條流所在的 pod 被換掉,streaming 會**當場斷掉**(step0 不排水、不善終)。

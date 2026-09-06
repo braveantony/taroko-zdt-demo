@@ -1,8 +1,8 @@
 # step4 +valkey/readiness:相對 step3 多三處——STATE_BACKEND memory→valkey、
 # 加回 readinessProbe(/readyz)、外加部署一顆 Valkey。
 # 效果:進度存到 Valkey,pod 換掉由新 pod 接手同一份進度、瀏覽器重連續播不回退;
-#   app 啟動要連 Valkey、載入狀態有耗時,readiness 在這段期間擋住流量、就緒才收 →
-#   連線與狀態都零停機。
+#   app 啟動要先確認連得上 Valkey(有耗時),readiness 在這段期間擋住流量、就緒才收 →
+#   連線可控收尾、狀態不回退。
 # namespace 設在本層:valkey 的 manifest 沒帶 namespace,靠這裡一起落到 zdt-tour。
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -55,7 +55,7 @@ patches:
           periodSeconds: 10
           failureThreshold: 3
           timeoutSeconds: 1
-      # ── readiness(step4 生效):新 pod 就緒(連上 Valkey、載入狀態)才收流量 ──
+      # ── readiness(step4 生效):新 pod 通過 /readyz(啟動時已確認連上 Valkey)才收流量 ──
       - op: add
         path: /spec/template/spec/containers/0/readinessProbe
         value:
