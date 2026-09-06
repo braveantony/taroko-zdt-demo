@@ -1,0 +1,11 @@
+# 對外入口(Gateway + HTTPRoute),套一次、跨 step0~4 都沿用。
+# 前提:Cilium 已開 kubeProxyReplacement / l2announcements / gatewayAPI / lb-ipam,
+#   且叢集已有 CiliumLoadBalancerIPPool 與 CiliumL2AnnouncementPolicy(這套環境已就緒)。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: zdt-tour
+
+resources:
+  - gateway.yaml
+  - httproute.yaml

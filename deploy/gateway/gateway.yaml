@@ -1,0 +1,16 @@
+# 對外入口:Cilium GatewayClass 會替這個 Gateway 建一個 LoadBalancer Service
+# (cilium-gateway-hydra),由 CiliumLoadBalancerIPPool 配一個 IP、CiliumL2AnnouncementPolicy
+# 用 ARP 對外宣告 → 叢集外(host)就能連到。
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: hydra
+spec:
+  gatewayClassName: cilium
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
