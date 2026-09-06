@@ -27,6 +27,21 @@ case <-bye:
     return
 ```
 
+## SSE_DRAIN on / off 差在哪
+
+同一段關機序列,`SSE_DRAIN` 只決定「要不要走 `Hub().Drain()` 那一步」——差別全在這裡:
+
+| | `off`(step2 及之前) | `on`(step3) |
+|---|---|---|
+| 關機時呼叫 `Drain()` | 不呼叫 | 呼叫 |
+| SSE handler 迴圈 | 只等 `timer.C`,永遠不回到閒置 | `bye` channel 一被 close → 送 `bye`、`return` |
+| `httpSrv.Shutdown` | 被永不結束的 SSE 卡到 **shutdown 上限(15s)逾時** → 才 `Close()` 強制剪線 | 連線全回到閒置 → **幾秒內乾淨收完** |
+| client 看到 | stream 中途被剪斷、**沒有 bye** | 先收到 **`bye`**、連線可預期地結束 |
+| pod 收場 | 拖滿 ~30s(preStop 15 + shutdown 15)、exit **非 0** | 幾秒 **exit 0** |
+
+`off` 就是 step2 對 SSE 的處理:graceful 有等,但等不完永不結束的 SSE,最後撞上限被剪。`on` 則是 app 主動
+說再見、收線,不用傻等。
+
 ## 這步的 Deployment 關鍵設定
 
 apply 之前先渲染出來看(只在本機組出 yaml,不碰叢集):
@@ -70,6 +85,15 @@ kubectl rollout restart deploy/hydra
 
 - 用 `curl` 看:收到 `bye` 後連線正常結束、指令跟著結束(curl 不會自動重連)。
 - 用瀏覽器看(想看導覽頁的話,另開終端機 `kubectl port-forward svc/hydra 8080:80`,開 <http://localhost:8080/tour>):`EventSource` 收到連線結束會自動重連,燈號由「導覽員換班中」轉回「導覽中」。
+
+> **重連是 client 做的,不是 server。** server 只做兩件事——送 `bye`、然後關掉連線;瀏覽器的 `EventSource`
+> 偵測到連線斷掉就**自己**重連,這是內建行為,跟有沒有收到 `bye` 無關(所以 `off` 硬斷時瀏覽器一樣會重連)。
+>
+> - `bye` 是 **app 層的禮貌訊息**:給前端 JS 更新畫面用(切成「導覽員換班中」),不是叫瀏覽器重連的指令。
+> - 連線一開始 server 送過一行 `retry: 1000`(SSE 契約),那是**建議 client 的重連間隔**(1 秒);動作還是
+>   client 做,不送就用瀏覽器預設(多數約 3 秒)。
+> - 所以 `drain=on` 改善的不是「幫 client 重連」,而是讓 **pod 早早、乾淨地放手(exit 0)**,順帶給前端一個
+>   `bye` 好更新 UI——client 端的重連,兩種情況本來都會發生。
 
 重點不是「TCP 連線永不中斷」,而是中斷變得可預期。
 
