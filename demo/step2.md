@@ -98,16 +98,39 @@ kubectl rollout restart deploy/hydra
 
 ## 預期現象
 
-- **`/slow` 壓測**:step1 那 5 個 `connection closed before message completed` 應該歸零——graceful
-  會等在途 `/slow` 做完再退出(這些請求在 SIGTERM 時剩不到 15 秒,落在 shutdown 上限內)。
-  這就是 step2 收掉 step0 ② 的證據。(可能仍剩 `aborted due to deadline`,那是 `-z` 到點,不算問題;
-  `/version` 也照樣維持 100%,只是短請求本來就沒東西留給 graceful 收。)
-- **SSE 那條流**:它是永遠不會自己結束的長連線,app 的 Shutdown 等不到它,撞到 15 秒上限後被
-  強制剪斷。從 pod 進入 `Terminating` 算起大約 **30 秒**(preStop 15 + shutdown 15)SSE 才斷——
-  不是立刻,但**還是斷了**。對照 step1:那裡 SIGTERM 一到 app 立刻死、SSE 約 15 秒就斷;
-  step2 的 graceful 會多等它到 shutdown 上限,所以拖到約 30 秒——有等,只是等不到永不結束的 SSE。
+- **`/slow` 壓測(這裡用 `seconds=20`)**:成功率 66.67%,**還是有 5 個 `connection closed before
+  message completed`——跟 step1 一樣沒少**。為什麼 graceful 沒救到?因為 `/slow?seconds=20` 要 20 秒,
+  比 hydra 的 shutdown 上限 `HYDRA_SHUTDOWN_TIMEOUT_SECONDS`(15 秒)還長。graceful 確實有等
+  ——**證據:成功的 10 條 latency 全是滿 20 秒才回**(裸奔的話早被切、不會是 20s)——但它最多只等
+  15 秒;在 SIGTERM 時剩餘超過 15 秒的 `/slow`,撞到上限就被 `httpSrv.Close()` 強制關閉。
+  → 一課:**graceful 的等待是有預算的(shutdown 上限),不是無限等**。想看它把在途請求「收完」
+  而非撞上限,把 `seconds` 調到 15 以下(例如 `10`)重跑——請求短於 shutdown 上限,graceful 就來得及
+  在剪線前收完:step1 仍會剪、step2 應該就歸零。
+- **SSE 那條流**:它是**永遠不會結束**的長連線——不管你把 shutdown 上限設多大都容不下。app 的
+  Shutdown 等不到它,撞到 15 秒上限後被強制剪斷。從 pod 進入 `Terminating` 算起大約 **30 秒**
+  (preStop 15 + shutdown 15)SSE 才斷——不是立刻,但**還是斷了**。對照 step1:那裡 SIGTERM 一到
+  app 立刻死、SSE 約 15 秒就斷;step2 多等它到上限、拖到約 30 秒——有等,只是「等」對無限長的連線沒用。
+
+### 實際輸出範例(`/slow?seconds=20`)
+
+```text
+Summary:
+  Success rate: 66.67%
+  Total:        60.00 sec
+  Slowest:      20.02 sec      ← 有回應的都花滿 20 秒(graceful 在等)
+
+Status code distribution:
+  [200] 10 responses
+
+Error distribution:
+  [5] connection closed before message completed   ← 需要 >15s、超過 shutdown 上限,被剪
+  [5] aborted due to deadline                       ← -z 到點的中止,不算問題
+```
+
+和 step1 的 `/slow=20` 幾乎一模一樣(都 10 / 5 / 5)——差別在**原因**:step1 是 SIGTERM 一到就切;
+step2 是等了滿 15 秒的上限才切。20 秒的請求在兩步都救不了,只是 step2「有試著等」。
 
 ## 還沒解決
 
-優雅關機救得了「會結束的請求」,救不了「不會自己結束的長連線」。
-得讓 app 關機時主動跟 SSE 道別、收線 → [step3](step3.md)。
+優雅關機的「等」有預算上限,而且對**永不結束**的 SSE 根本沒用——再大的上限也容不下無限長的連線。
+所以不能靠「等」,得讓 app 關機時**主動**跟 SSE 道別、收線 → [step3](step3.md)。
