@@ -109,6 +109,22 @@ kubectl exec -it deploy/client -- \
 - **`-c 5`**:**5 條連線同時**打(concurrency = 5)。
 - **`/slow?seconds=10`**:hydra 的測試端點,收到請求後**故意睡 10 秒**才回覆,專門製造「關機當下還在跑的長請求」。
 
+**`/slow` 背後的 code**([`internal/server/handlers.go`](../images/hydra/internal/server/handlers.go) 的 `handleSlow`):
+它不是傻傻 `time.Sleep`,而是在「計時器」和「請求的 context」之間 `select`——睡滿才回,連線一被關就立刻收工:
+
+```go
+timer := time.NewTimer(d)      // d = seconds 參數(預設 3、最多 60)
+defer timer.Stop()
+select {
+case <-timer.C:                // 睡滿 d 秒 → 正常回 JSON(hostname / version)
+case <-r.Context().Done():     // 連線被關(client 斷線 / server 收線)→ 提早收工,不留殭屍
+    return
+}
+```
+
+這就是 `/slow` 能當「關機邊界上一筆請求」乾淨探針的原因:平常睡滿 N 秒 = 一筆還在處理的請求;連線一旦被關
+(graceful 收線、或 SIGKILL 後連線斷),`r.Context().Done()` 觸發、handler 立刻結束,不會卡住。
+
 壓測跑著時,另開一個終端機觸發滾動更新:
 
 ```sh
