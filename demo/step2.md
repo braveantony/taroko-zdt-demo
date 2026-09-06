@@ -100,19 +100,40 @@ kubectl exec -it deploy/client -- \
 kubectl rollout restart deploy/hydra
 ```
 
-**預期(依 K8s tGPS 生命週期)**:preStop 吃掉 15 秒,SIGTERM 後 graceful 只剩 **5 秒**就被 SIGKILL。
-一條 `/slow=10` 在 SIGTERM 時只要剩超過 5 秒沒跑完,就會被硬砍 → oha 冒出 `connection closed`;pod 也以
-「grace period 到點被殺」的非正常狀態結束(`kubectl get events` / `describe pod` 可佐證)。**開了 graceful,
-卻因為 tGPS 太短而形同虛設。**
+**實測(tGPS=20)**——35 次請求,結果分三種:
 
-看完改回正解(tGPS=45)再跑同一條對照:graceful 有滿 15 秒、`/slow=10` 收得完 → `connection closed` 歸零。
+```
+Status code distribution:
+  [200] 25 responses
+
+Error distribution:
+  [5] aborted due to deadline
+  [5] connection closed before message completed
+```
+
+三種各對應什麼,分開看(**混在一起就會誤判**):
+
+- **`[5] connection closed before message completed`** —— 這 5 條就是 tGPS 太短的鐵證。rollout 時舊 pod 進
+  `Terminating`,preStop 先吃掉 15 秒,SIGTERM 後 graceful 只剩 **5 秒**(20 − 15),但 `/slow=10` 要 10 秒才
+  收得完 → 5 秒一到、tGPS 撞頂,SIGKILL 把還在途的連線全部硬砍。`-c 5` 的 5 條連線(keep-alive 全釘在這顆
+  要走的 pod 上)一起被砍,剛好 5 條。**開了 graceful,卻因為 tGPS 太短而形同虛設。**
+- **`[5] aborted due to deadline`** —— 這 5 條**不是 pod 的鍋**,是 oha 自己 `-z 60s` 到點:測試視窗收尾時
+  正好有 5 條 `/slow=10` 還在飛(每條 10 秒,撞 60 秒邊界必卡一批),oha 主動中止。與關機無關,別跟上面
+  那 5 條混為一談。
+- **`[200] 25`** —— 沒撞上那顆 pod 關機瞬間的請求,照常 10 秒收完。
+
+pod 這邊也對得起來:它以「grace period 到點被 SIGKILL」的非正常狀態收場(`kubectl describe pod` 會看到
+exit code **137** = 128 + 9,`kubectl get events` 有 grace period 相關事件)。
+
+**對照組待跑(tGPS=45,正解)**:改回 step2、同一條 `/slow=10` 再跑一次。graceful 有滿 15 秒、10 秒的請求
+收得完 → `connection closed` 應該**歸零**(`aborted due to deadline` 可能還在,那是 oha 60 秒邊界的正常尾巴,
+不是壞事)。
 
 ```sh
 kubectl apply -k deploy/step2      # tGPS 回到 45
 ```
 
-> 上面的秒數與剪掉的條數是「預期(依生命週期)」,建議兩個設定各跑一次:你應該會看到
-> **tGPS=20 有 `connection closed`、tGPS=45 沒有(或明顯更少)**。實際數字貼給我,我補進來。
+> tGPS=45 這組你跑完把 oha 輸出貼給我,我補成完整對照(預期:`connection closed` = 0)。
 
 ## 觀察:graceful 撐到上限,但 SSE 還是斷
 
