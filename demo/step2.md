@@ -125,15 +125,38 @@ Error distribution:
 pod 這邊也對得起來:它以「grace period 到點被 SIGKILL」的非正常狀態收場(`kubectl describe pod` 會看到
 exit code **137** = 128 + 9,`kubectl get events` 有 grace period 相關事件)。
 
-**對照組待跑(tGPS=45,正解)**:改回 step2、同一條 `/slow=10` 再跑一次。graceful 有滿 15 秒、10 秒的請求
-收得完 → `connection closed` 應該**歸零**(`aborted due to deadline` 可能還在,那是 oha 60 秒邊界的正常尾巴,
-不是壞事)。
+**對照組(tGPS=45,正解)**:改回 step2、同一條 `/slow=10` 再跑一次。
 
 ```sh
 kubectl apply -k deploy/step2      # tGPS 回到 45
 ```
 
-> tGPS=45 這組你跑完把 oha 輸出貼給我,我補成完整對照(預期:`connection closed` = 0)。
+實測——Success rate **100%**:
+
+```
+Status code distribution:
+  [200] 25 responses
+
+Error distribution:
+  [5] aborted due to deadline
+```
+
+`connection closed` **歸零**。唯一動的變因是 tGPS(20 → 45),被砍的條數就從 5 掉到 0——graceful 這下有滿
+15 秒預算,`/slow=10` 全收得完。`aborted due to deadline` 一樣是 5:它跟關機無關,純粹是 oha `-z 60s` 到點時
+卡住的那批,兩組都相同。
+
+### 那 keep-alive 呢?不是會一直把流量灌進要走的 pod?
+
+會,而且**兩組都一樣灌**——這點很容易誤會,講清楚:preStop 那 15 秒 pod 還活著,keep-alive 連線一直釘在
+它身上、oha 照灌 `/slow=10`。差別不在「有沒有灌」,而在**灌進來的請求收不收得完**:
+
+- **tGPS=20**:SIGTERM 後 graceful 只剩 5 秒 → 在途的 `/slow=10`(要 10 秒)撐不到,tGPS 一到就 SIGKILL 硬砍 → 5 條 `connection closed`。
+- **tGPS=45**:SIGTERM 後有滿 15 秒 → 同一批在途 `/slow=10` 全收得完。`Shutdown` 會等它們跑完,同時對 SIGTERM 之後的新請求回 `Connection: close`(新流量改打新 pod)→ 0 條被砍。
+
+換句話說,`seconds=10 < shutdown 上限 15` 這個刻意的選法,讓 keep-alive 灌進來的流量**一定收得完**,
+keep-alive 就干擾不了實驗——**tGPS 才是唯一變因**。這也正是這裡用 10 秒、不用 20 秒的原因:20 秒 > shutdown
+上限,keep-alive 灌進來的會撐不完,「tGPS 太短」和「請求比 shutdown 上限還長」兩個效應就混在一起、分不清誰
+砍了誰。
 
 ## 觀察:graceful 撐到上限,但 SSE 還是斷
 
