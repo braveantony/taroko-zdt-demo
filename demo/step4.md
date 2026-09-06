@@ -11,12 +11,15 @@ step3 的問題:連線善終了,但進度存在 pod 的記憶體,pod 一換就�
   readiness 不會翻紅。)
 - 多部署一顆 Valkey(單副本、無持久化;`apply` 時一起建起來)。
 
+> 指令用精簡寫法;請先照 [step0 的前置](step0.md) 設好 `kind-zdt` context 與 `zdt-tour` namespace,
+> 這樣 bare `kubectl` 才會指到對的地方。
+
 ## 切到這步
 
 ```sh
-kubectl --context kind-zdt apply -k deploy/step4          # 同時建立 Valkey
-kubectl --context kind-zdt -n zdt-tour rollout status deploy/hydra
-kubectl --context kind-zdt -n zdt-tour get pods -o wide   # 應該多一顆 valkey-*
+kubectl apply -k deploy/step4          # 同時建立 Valkey
+kubectl rollout status deploy/hydra
+kubectl get pods -o wide   # 應該多一顆 valkey-*
 ```
 
 ## 觀察
@@ -26,16 +29,16 @@ kubectl --context kind-zdt -n zdt-tour get pods -o wide   # 應該多一顆 valk
 
 ```sh
 # 1) 建 session、收事件(記住 seq 與 pod),Ctrl-C
-kubectl --context kind-zdt -n zdt-tour exec -it deploy/client -- sh -c \
+kubectl exec -it deploy/client -- sh -c \
   'curl -s -c /tmp/jar http://hydra.zdt-tour.svc.cluster.local/tour >/dev/null &&
    curl -s -b /tmp/jar -N http://hydra.zdt-tour.svc.cluster.local/tour/events'
 
 # 2) 滾動更新,並等它換完(確保等下重連的是新 pod)
-kubectl --context kind-zdt -n zdt-tour rollout restart deploy/hydra
-kubectl --context kind-zdt -n zdt-tour rollout status deploy/hydra
+kubectl rollout restart deploy/hydra
+kubectl rollout status deploy/hydra
 
 # 3) 同一個 cookie 重連
-kubectl --context kind-zdt -n zdt-tour exec -it deploy/client -- sh -c \
+kubectl exec -it deploy/client -- sh -c \
   'curl -s -b /tmp/jar -N http://hydra.zdt-tour.svc.cluster.local/tour/events'
 ```
 
@@ -54,5 +57,5 @@ kubectl --context kind-zdt -n zdt-tour exec -it deploy/client -- sh -c \
 清理(一併移除 Valkey):
 
 ```sh
-kubectl --context kind-zdt delete -k deploy/step4
+kubectl delete -k deploy/step4
 ```

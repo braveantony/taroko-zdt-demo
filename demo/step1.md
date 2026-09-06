@@ -13,11 +13,14 @@ kubelet 則執行 `preStop`,讓 process 先多活 15 秒再收到 SIGTERM。注�
 (app 本身仍不處理關機,`HYDRA_GRACEFUL=off`。distroless 沒有 shell,所以 preStop 用 K8s 原生的
 `sleep` action,不是 `exec` 跑 `sleep`。)
 
+> 指令用精簡寫法;請先照 [step0 的前置](step0.md) 設好 `kind-zdt` context 與 `zdt-tour` namespace,
+> 這樣 bare `kubectl` 才會指到對的地方。
+
 ## 切到這步
 
 ```sh
-kubectl --context kind-zdt apply -k deploy/step1
-kubectl --context kind-zdt -n zdt-tour rollout status deploy/hydra
+kubectl apply -k deploy/step1
+kubectl rollout status deploy/hydra
 ```
 
 ## 觀察
@@ -25,14 +28,14 @@ kubectl --context kind-zdt -n zdt-tour rollout status deploy/hydra
 沿用 [step0](step0.md) 的雙終端——右邊 `watch` 盯 pods、左邊在 client 內跑 oha:
 
 ```sh
-kubectl --context kind-zdt -n zdt-tour exec -it deploy/client -- \
+kubectl exec -it deploy/client -- \
   sh -c 'oha -z 120s -c 20 --disable-keepalive "$TARGET"'
 ```
 
 壓測跑著時,另開終端觸發滾動更新:
 
 ```sh
-kubectl --context kind-zdt -n zdt-tour rollout restart deploy/hydra
+kubectl rollout restart deploy/hydra
 ```
 
 ## 預期現象

@@ -20,29 +20,33 @@
 
 ## 前置
 
-- kind + Cilium 叢集就緒(見 [`infra/`](../infra/),`./infra/up.sh`),context = `kind-zdt`。
+- kind + Cilium 叢集就緒(見 [`infra/`](../infra/),`./infra/up.sh`)。
 - 三個 GHCR image 皆已設為 **Public**:`hydra`、`loadtest`、`taroko-tools`。
 
-下面每條指令都自帶 `--context kind-zdt -n zdt-tour`,任意開幾個終端、複製貼上就能跑,不依賴任何 shell 別名或環境設定。
+先把 context 與 namespace 設好——這兩行寫進 `~/.kube/config`,對**所有終端**都有效
+(也順便解決 shell 別名不跨終端的問題),之後每條指令就不必再帶 `--context` 和 `-n`:
 
-> 嫌指令太長,可先把 namespace 綁到這個 context(寫進 `~/.kube/config`,對所有終端生效),之後就能省略每條的 `-n zdt-tour`:
->
-> ```sh
-> kubectl config set-context kind-zdt --namespace=zdt-tour
-> ```
+```sh
+kubectl config use-context kind-zdt                        # 設為目前 context
+kubectl config set-context --current --namespace=zdt-tour  # 預設 namespace 設成 zdt-tour
+```
+
+下面的指令都用精簡寫法(`kubectl get pods …`)。做完 demo 想切回原本的 context:
+`kubectl config use-context <你原本的>`。(若不想改動全域設定,也可以在每條指令自行補回
+`--context kind-zdt -n zdt-tour`。)
 
 ## 1. 部署 step0
 
 ```sh
-kubectl --context kind-zdt apply -k deploy/step0
-kubectl --context kind-zdt -n zdt-tour rollout status deploy/hydra
-kubectl --context kind-zdt -n zdt-tour rollout status deploy/client
+kubectl apply -k deploy/step0
+kubectl rollout status deploy/hydra
+kubectl rollout status deploy/client
 ```
 
 ## 2. 確認 pod 分散在不同 node
 
 ```sh
-kubectl --context kind-zdt -n zdt-tour get pods -o wide
+kubectl get pods -o wide
 ```
 
 預期:3 個 `hydra-*` 各據一台 hydra tier 的 worker(`zdt-worker` / `zdt-worker2` / `zdt-worker3`),
@@ -53,13 +57,13 @@ kubectl --context kind-zdt -n zdt-tour get pods -o wide
 **右終端 —— 盯 pod 變化:**
 
 ```sh
-watch -n1 'kubectl --context kind-zdt -n zdt-tour get pods -o wide'
+watch -n1 'kubectl get pods -o wide'
 ```
 
 **左終端 —— 從 client pod 內用 oha 持續壓測 hydra Service:**
 
 ```sh
-kubectl --context kind-zdt -n zdt-tour exec -it deploy/client -- \
+kubectl exec -it deploy/client -- \
   sh -c 'oha -z 120s -c 20 --disable-keepalive "$TARGET"'
 ```
 
@@ -72,7 +76,7 @@ oha 會即時顯示 QPS、狀態碼分佈與 latency。並發數 `-c`、時長 `
 壓測跑著的同時,另開一個終端:
 
 ```sh
-kubectl --context kind-zdt -n zdt-tour rollout restart deploy/hydra
+kubectl rollout restart deploy/hydra
 ```
 
 ## 5. 預期現象(不處理的代價)
@@ -121,7 +125,7 @@ hydra 的導覽事件流是長連線,最能體現「連線存亡」。`/tour/eve
 (否則回 400),所以先 `curl -c` 造訪 `/tour` 拿 cookie,再帶 `-b` 掛事件流:
 
 ```sh
-kubectl --context kind-zdt -n zdt-tour exec -it deploy/client -- sh -c \
+kubectl exec -it deploy/client -- sh -c \
   'curl -s -c /tmp/jar http://hydra.zdt-tour.svc.cluster.local/tour >/dev/null &&
    curl -s -N -b /tmp/jar http://hydra.zdt-tour.svc.cluster.local/tour/events'
 ```
@@ -134,7 +138,7 @@ kubectl --context kind-zdt -n zdt-tour exec -it deploy/client -- sh -c \
 step0 是基準線。**不必先清理**,直接切到 step1 就會原地更新同一組資源、一步步把上面的問題補起來:
 
 ```sh
-kubectl --context kind-zdt apply -k deploy/step1
+kubectl apply -k deploy/step1
 ```
 
 → [step1:preStop 緩衝](step1.md)
@@ -142,5 +146,5 @@ kubectl --context kind-zdt apply -k deploy/step1
 ## 6. 清理(想整個收掉時)
 
 ```sh
-kubectl --context kind-zdt delete -k deploy/step0
+kubectl delete -k deploy/step0
 ```
