@@ -11,6 +11,32 @@ step3 的問題:連線善終了,但進度存在 pod 的記憶體,pod 一換就�
   readiness 不會翻紅。)
 - 多部署一顆 Valkey(單副本、無持久化;`apply` 時一起建起來)。
 
+## 這步的 Deployment 關鍵設定
+
+apply 之前先渲染出來看(只在本機組出 yaml,不碰叢集)——這步的輸出除了 hydra,還會多出
+一個 Valkey 的 Deployment 與 Service:
+
+```sh
+kubectl kustomize deploy/step4
+```
+
+hydra Deployment 相對 step3 改了兩處——`STATE_BACKEND` 換成 valkey、加上 `readinessProbe`:
+
+```yaml
+      containers:
+      - name: hydra
+        env:
+        - {name: HYDRA_GRACEFUL, value: "on"}
+        - {name: HYDRA_STATE_BACKEND, value: valkey}    # ← step4:memory → valkey(進度外部化)
+        - {name: HYDRA_SSE_DRAIN, value: "on"}
+        - {name: HYDRA_TOUR_INTERVAL_SECONDS, value: "10"}
+        readinessProbe:            # ← step4 新增:就緒(連上 Valkey)才收流量
+          httpGet: {path: /readyz, port: http}
+          periodSeconds: 2
+          failureThreshold: 1
+        # tGPS 45、preStop 15、liveness、nodeSelector / affinity / strategy 同 step3
+```
+
 > 指令用精簡寫法;請先照 [step0 的前置](step0.md) 設好 `kind-zdt` context 與 `zdt-tour` namespace,
 > 這樣 bare `kubectl` 才會指到對的地方。
 

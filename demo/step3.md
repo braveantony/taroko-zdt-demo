@@ -5,6 +5,27 @@ step2 的問題:SSE 長連線在關機時等不到自己結束,撞 shutdown 上�
 **這步加的**(相對 step2 的唯一差別):`HYDRA_SSE_DRAIN=on`。app 關機時主動對每條 SSE 送出
 `bye` 事件,然後由 server 端關閉連線。手上沒有掛著的長連線,`Shutdown` 幾秒內就能完成、exit 0。
 
+## 這步的 Deployment 關鍵設定
+
+apply 之前先渲染出來看(只在本機組出 yaml,不碰叢集):
+
+```sh
+kubectl kustomize deploy/step3
+```
+
+相對 step2,只改一個 env——`SSE_DRAIN`:
+
+```yaml
+      containers:
+      - name: hydra
+        env:
+        - {name: HYDRA_GRACEFUL, value: "on"}
+        - {name: HYDRA_STATE_BACKEND, value: memory}    # 進度仍在記憶體(這步還沒解)
+        - {name: HYDRA_SSE_DRAIN, value: "on"}          # ← step3:off → on(關機送 bye、排空 SSE)
+        - {name: HYDRA_TOUR_INTERVAL_SECONDS, value: "10"}
+        # tGPS 45、preStop 15、nodeSelector / affinity / strategy / liveness 同 step2
+```
+
 > 指令用精簡寫法;請先照 [step0 的前置](step0.md) 設好 `kind-zdt` context 與 `zdt-tour` namespace,
 > 這樣 bare `kubectl` 才會指到對的地方。
 

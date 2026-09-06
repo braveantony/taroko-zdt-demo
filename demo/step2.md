@@ -9,6 +9,28 @@ app 停止接新連線、把在途的 HTTP 請求處理完再退出;這個等待
 順帶把 `terminationGracePeriodSeconds` 從 30 拉到 45:preStop 先睡 15 秒、shutdown 最多再等 15 秒,
 原本的 30 秒剛好貼著上限,拉到 45 留點餘裕,免得 SIGKILL 搶先到。
 
+## 這步的 Deployment 關鍵設定
+
+apply 之前先渲染出來看(只在本機組出 yaml,不碰叢集):
+
+```sh
+kubectl kustomize deploy/step2
+```
+
+相對 step1,改了兩處——`GRACEFUL` 與 `terminationGracePeriodSeconds`:
+
+```yaml
+      terminationGracePeriodSeconds: 45      # ← step2:30 → 45(留給優雅關機的時間)
+      containers:
+      - name: hydra
+        env:
+        - {name: HYDRA_GRACEFUL, value: "on"}          # ← step2:off → on(優雅關機)
+        - {name: HYDRA_STATE_BACKEND, value: memory}
+        - {name: HYDRA_SSE_DRAIN, value: "off"}         # 仍不排空 SSE
+        - {name: HYDRA_TOUR_INTERVAL_SECONDS, value: "10"}
+        # lifecycle.preStop(15s)沿用 step1;nodeSelector / affinity / strategy / liveness 同前
+```
+
 > 指令用精簡寫法;請先照 [step0 的前置](step0.md) 設好 `kind-zdt` context 與 `zdt-tour` namespace,
 > 這樣 bare `kubectl` 才會指到對的地方。
 

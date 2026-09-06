@@ -13,6 +13,26 @@ kubelet 則執行 `preStop`,讓 process 先多活 15 秒再收到 SIGTERM。注�
 (app 本身仍不處理關機,`HYDRA_GRACEFUL=off`。distroless 沒有 shell,所以 preStop 用 K8s 原生的
 `sleep` action,不是 `exec` 跑 `sleep`。)
 
+## 這步的 Deployment 關鍵設定
+
+apply 之前先渲染出來看(只在本機組出 yaml,不碰叢集):
+
+```sh
+kubectl kustomize deploy/step1
+```
+
+相對 step0,hydra Deployment 只多了 `lifecycle.preStop`:
+
+```yaml
+      containers:
+      - name: hydra
+        lifecycle:                 # ← step1 新增:摘除 endpoint 後多撐 15 秒
+          preStop:
+            sleep: {seconds: 15}
+        # env(graceful=off / memory / drain=off)、livenessProbe、tGPS 30、
+        # nodeSelector / affinity / strategy 都與 step0 相同
+```
+
 > 指令用精簡寫法;請先照 [step0 的前置](step0.md) 設好 `kind-zdt` context 與 `zdt-tour` namespace,
 > 這樣 bare `kubectl` 才會指到對的地方。
 

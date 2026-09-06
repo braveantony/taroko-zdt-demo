@@ -16,6 +16,46 @@
 
 **沒有** preStop、**沒有** readinessProbe、**沒有** graceful shutdown、**沒有** 排空 → 換手瞬間連線被硬斷。
 
+## 這步的 Deployment 關鍵設定
+
+apply 之前,先把這步會套用的 manifest 渲染出來看(只在本機把 yaml 組出來,不碰叢集):
+
+```sh
+kubectl kustomize deploy/step0
+```
+
+其中 hydra Deployment 的關鍵欄位如下(image / ports / resources / securityContext 等樣板已略,
+完整逐字輸出見上面指令):
+
+```yaml
+spec:
+  replicas: 3
+  strategy:                                # 更新策略:先起新、後刪舊,容量不下降
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  template:
+    spec:
+      nodeSelector: {tier: hydra}          # 只排到 hydra tier(w1–3)
+      affinity:                            # 3 副本盡量分散到不同 node
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector: {matchLabels: {app: hydra}}
+              topologyKey: kubernetes.io/hostname
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: hydra
+        livenessProbe:                     # 掛了會重啟
+          httpGet: {path: /healthz, port: http}
+        env:
+        - {name: HYDRA_GRACEFUL, value: "off"}         # 收 SIGTERM 立即死(不優雅關機)
+        - {name: HYDRA_STATE_BACKEND, value: memory}   # 進度存 pod 記憶體
+        - {name: HYDRA_SSE_DRAIN, value: "off"}        # 關機不排空 SSE
+        - {name: HYDRA_TOUR_INTERVAL_SECONDS, value: "10"}
+        # ✗ 沒有 lifecycle.preStop   ✗ 沒有 readinessProbe
+```
+
 ---
 
 ## 前置
