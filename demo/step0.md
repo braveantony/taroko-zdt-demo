@@ -88,6 +88,33 @@ kubectl --context kind-zdt -n zdt-tour rollout restart deploy/hydra
 - 這些連線錯誤就是 step1–4 要一步步消滅的東西:到 step2 的優雅關機,請求會被好好收完;
   到 step3 的排空,SSE 會先收到 `bye` 再乾淨重連。
 
+### 實際輸出範例
+
+一輪 120 秒、期間觸發幾次滾動更新,oha 收尾的統計:
+
+```text
+Summary:
+  Success rate: 99.83%
+  Total:        120.10 sec
+  Requests/sec: 1341.8
+
+Status code distribution:
+  [200] 160883 responses
+
+Error distribution:
+  [254] Connection refused (os error 111)
+  [10]  connection error
+  [4]   aborted due to deadline
+  [1]   Connection reset by peer (os error 104)
+  [1]   connection closed before message completed
+```
+
+16 萬個請求、成功率 99.83%——而**成功的清一色是 `[200]`**,一個非 2xx 都沒有。代價全落在 **Error distribution**:連線層錯誤共 266 筆,絕大多數是 `Connection refused`(254 筆,新連線打到剛被殺、endpoint 還沒更新完的 pod),其餘是 `Connection reset` / `closed before message completed`(連線建好後 pod 中途死掉)。
+
+(另外那 4 個 `aborted due to deadline` 不是滾動更新造成的,是 `-z 120s` 時間到、還在途的請求被中止。)
+
+換句話說,step0 的失敗只會以「連線斷掉」的形式出現在 Error distribution,永遠不會變成一個收得好好的 HTTP 狀態碼。
+
 ### (選用)直接看 SSE 連線被硬斷
 
 hydra 的導覽事件流是長連線,最能體現「連線存亡」。另開終端掛一條 SSE:
