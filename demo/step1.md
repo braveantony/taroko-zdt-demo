@@ -60,16 +60,39 @@ kubectl rollout restart deploy/hydra
 
 ## 預期現象
 
-- oha 的 **Error distribution** 裡,**關機端**的 `Connection refused` 大幅減少——
-  舊 pod 被標成 not-ready 後,新連線逐漸不再打到它。
-- 但不會完全歸零,還有兩個缺口:
-  - **關機端**:15 秒一到、SIGTERM 送達,不處理關機的 app 立刻結束,
-    **那一刻還開著的連線仍被硬斷**(多是 `Connection reset` / `closed before message completed`)。
-  - **啟動端**:step0–3 都還沒有 readinessProbe,新 pod 一進入 Running 就可能被加進 Service,
-    但這時 hydra 也許還沒 `listen` 完 → 又冒出一批 `Connection refused`。這個啟動缺口要到
-    step4 加上 readiness 才補起來——所以別把所有 `Connection refused` 都當成舊 endpoint 的傳播延遲。
+- oha 打 `/version`:這輪實測 **100% 成功、連線層錯誤掛零**——preStop 把「新連線打到將死 pod」
+  的競態關掉了。`/version` 是短請求,preStop 期間新連線早已改道,等 SIGTERM 真的送到,舊 pod
+  手上也幾乎沒有在途連線可斷。對照 [step0](step0.md#實際輸出範例) 的 266 個連線層錯誤,差別很直接。
+- 但這只代表「短請求 + 換手」這個組合被 preStop 蓋掉了,**不代表 step1 已經零停機**。還沒解的是:
+  - **在途 / 較慢的請求**:若請求還沒處理完 SIGTERM 就到,裸奔 app 立刻死 → 照樣斷
+    (step2 的優雅關機才會把手上的請求收完)。
+  - **SSE 長連線**:preStop 到期、SIGTERM 一到就被硬斷——用 `/version` 這種短請求看不到,
+    得掛一條 SSE 才看得出來(step2 起改善、step3 才乾淨收)。
+  - (次要)**啟動端**:step0–3 沒有 readinessProbe,新 pod 若還沒 `listen` 完就收流量,
+    理論上會有零星 `Connection refused`;這輪沒遇到,但不保證每次都沒有,step4 加 readiness 才補上。
+
+### 實際輸出範例
+
+一輪 120 秒、期間觸發滾動更新,oha 收尾的統計:
+
+```text
+Summary:
+  Success rate: 100.00%
+  Total:        120.07 sec
+  Requests/sec: 1351.96
+
+Status code distribution:
+  [200] 162327 responses
+
+Error distribution:
+  [7] aborted due to deadline
+```
+
+16 萬個請求、**100% 成功**,連線層錯誤掛零(那 7 個 `aborted due to deadline` 是 `-z 120s` 到點、
+還在途的請求被中止,與滾動更新無關)。step0 同樣的壓測有 266 個 `Connection refused` 等連線錯誤,
+到 step1 直接歸零——這就是 preStop 對「短請求換手」的效果。
 
 ## 還沒解決
 
-在途連線在關機瞬間還是斷。要讓 app 收到 SIGTERM 後把手上的請求好好收完,
-得靠程式層的優雅關機 → [step2](step2.md)。
+短請求換手已經乾淨,但**在途 / 長連線**在 SIGTERM 到來時還是被硬斷。要讓 app 收到 SIGTERM 後
+先把手上的請求好好收完,得靠程式層的優雅關機 → [step2](step2.md)。
