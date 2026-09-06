@@ -6,33 +6,40 @@ step1 的問題:app 收到 SIGTERM 立刻結束,在途連線被硬斷。
 新連線、把在途的 HTTP 請求處理完再退出,最多等 `HYDRA_SHUTDOWN_TIMEOUT_SECONDS`(預設 15 秒),
 等不到就強制收掉。
 
-但**光開 graceful 還不夠——它得有時間跑完**,而那段時間是 `terminationGracePeriodSeconds`(tGPS)
+一句話看懂 step2:step1 是「**不等**」——SIGTERM 一到就死;step2 是「**等**」——把手上在途的請求收完
+再走。整份 step2 就在講這個等:app 願意等多久、K8s 容不容得下它等、SIGTERM 那刻手上有沒有東西可等,
+以及什麼東西是永遠等不完的。
+
+app 願意等是一回事,K8s 讓不讓它等完是另一回事——那段時間是 `terminationGracePeriodSeconds`(tGPS)
 給的。tGPS 從 pod 進入 `Terminating` 起算、**包含 preStop**,到點就 SIGKILL。所以要讓 graceful 收得完:
 
 ```
 tGPS ≥ preStop(15s) + shutdown 上限(15s)
 ```
 
-step2 把 tGPS 設成 **45**(15 preStop + 15 shutdown + 15 裕度)。`GRACEFUL` 和 `tGPS` 是一組的,
-少搭一個就出事——下面「反例」親眼看。
-
-tGPS 這段預算裡,依序經過三個重點階段(時間軸照比例):
+step2 把 tGPS 設成 **45**(15 preStop + 15 shutdown + 15 裕度)。這 45 秒是「等」的總預算,裡面有
+**兩個時鐘**在跑:
 
 ```text
-        +=======Termination Grace Period = 45s=======+
-        |              |                             |
-        preStop Hook   SIGTERM                       SIGKILL
-        |              |                             |
-        v              v                             v
- -------+--------------+-----------------------------+-------> 時間
-        0s             15s                           45s
+        +=================tGPS = 45s=================+
+        |              |              |              |
+        preStop        SIGTERM        shutdown       SIGKILL
+        |              |              |              |
+        v              v              v              v
+ -------+--------------+--------------+--------------+-------> 時間
+        0s             15s            30s            45s
 ```
 
-`preStop`=關機緩衝(0→15s)、`SIGTERM`=送關機訊號(15s,graceful 從這開始跑)、`SIGKILL`=強制終止(45s,tGPS 到點)。
+- **第 15 秒 SIGTERM**:preStop 結束,app 開始「等」在途請求。
+- **第 30 秒 shutdown 上限**:app **自己的鐘**——等不完就自己剪線退出(app 主動放棄)。
+- **第 45 秒 SIGKILL**:**K8s 的鐘**——tGPS 到點,強制砍。
+
+正常是 app 的鐘先響(第 30 秒),自己乾淨收場;tGPS 要是小於 30,換 K8s 的鐘先響——那就是「白等」,
+下面反例親眼看。
 
 **背後的 code**([`internal/server/server.go`](../images/hydra/internal/server/server.go) 的關機序列):
-`GRACEFUL=on` 時 main 有註冊 SIGTERM handler,`Run` 收到訊號後走到 `httpSrv.Shutdown`——停收新連線、
-等在途請求在 shutdown 上限內跑完:
+`GRACEFUL=on` 時 main 註冊了 SIGTERM handler,收到訊號走到 `httpSrv.Shutdown`——「等」在 code 裡就是
+這一行,ctx 的 timeout 就是 app 願意等的上限;等不到才 `Close()` 硬剪:
 
 ```go
 shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout) // 預設 15s
@@ -43,7 +50,8 @@ if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 }
 ```
 
-**Go 官方怎麼定義 `Shutdown`**([`net/http` · Server.Shutdown](https://pkg.go.dev/net/http#Server.Shutdown)),四個要點:
+**Go 官方怎麼定義 `Shutdown`**([`net/http` · Server.Shutdown](https://pkg.go.dev/net/http#Server.Shutdown)),
+講白了就是「等使用中的連線回到閒置」。四個要點,**第四點先記著**,結尾會用到:
 
 - **不中斷任何進行中的連線**(*without interrupting any active connections*)——在途 HTTP 請求會被好好收完。
 - 動作順序:先關掉所有 listener(不再收新連線)→ 關閉閒置連線 → **等使用中的連線回到閒置**再收。
@@ -58,8 +66,9 @@ apply 之前先渲染出來看(只在本機組出 yaml,不碰叢集):
 kubectl kustomize deploy/step2
 ```
 
-相對 step1,改了三處,而且要**互相搭配**——`GRACEFUL` 開優雅關機、`HYDRA_SHUTDOWN_TIMEOUT_SECONDS`
-是它的等待上限、`terminationGracePeriodSeconds` 要蓋得住(≥ preStop + shutdown 上限):
+相對 step1 改了三處,剛好對應「等」的三件事——**要不要等**(`GRACEFUL`)、**app 願意等多久**
+(`HYDRA_SHUTDOWN_TIMEOUT_SECONDS`)、**K8s 容不容得下它等**(`terminationGracePeriodSeconds` ≥
+preStop + shutdown 上限),少一個都不成:
 
 ```yaml
       terminationGracePeriodSeconds: 45       # ← step2:30 → 45(= preStop 15 + shutdown 15 + 裕度 15)
@@ -84,26 +93,10 @@ kubectl apply -k deploy/step2
 kubectl rollout status deploy/hydra
 ```
 
-## 反例:tGPS 太短,graceful 會被 SIGKILL 廢掉
+## 先驗證:等得完(tGPS=45)
 
-先示範「搭配沒做好」會怎樣。時間軸是這樣——tGPS 到點,不管 graceful 收完沒,一律 SIGKILL:
-
-```
-Terminating ──preStop 15s──► SIGTERM ──app graceful(最多 15s)──► 乾淨結束
-     │                                                              
-     └───────────────── tGPS 到點就 SIGKILL(硬砍)───────────────►
-```
-
-repo 裡有現成的反例 overlay [`deploy/step2-badtgps`](../deploy/step2-badtgps/):它 reuse step2、只把
-`terminationGracePeriodSeconds` 覆蓋成太短的 **20**(< preStop 15 + shutdown 15)。切過去:
-
-```sh
-kubectl apply -k deploy/step2-badtgps
-kubectl rollout status deploy/hydra
-```
-
-用 oha 打 **`/slow?seconds=10`**——刻意選 10 秒(**< shutdown 上限 15**),讓 tGPS 成為唯一變因:
-shutdown 上限本身收得完 10 秒的請求,收不完只會是因為 tGPS 太短、被 SIGKILL 搶先。壓測跑著時觸發滾動更新:
+先證明「等」有用。用 oha 打 **`/slow?seconds=10`**——每條請求故意跑 10 秒,SIGTERM 落下那刻一定有幾條
+還在途(keep-alive 釘著,下面 keep-alive 段細講);而 10 秒 **< shutdown 上限 15**,所以 app 等得完:
 
 ```sh
 kubectl exec -it deploy/client -- \
@@ -114,44 +107,12 @@ kubectl exec -it deploy/client -- \
 
 - **`-z 60s`**:持續打 **60 秒**(`-z` 是時間模式;`-n` 才是固定次數)。
 - **`-c 5`**:**5 條連線同時**打(並行度)。
-- **`/slow?seconds=10`**:hydra 的測試端點,收到請求後**故意睡 10 秒**才回覆,專門用來製造「關機當下還在途的長請求」。
-- 這裡**沒加 `--disable-keepalive`** → 用的是 keep-alive(連線重複用),這對本測試很關鍵,下面 keep-alive 那段細講。
+- **`/slow?seconds=10`**:hydra 的測試端點,收到請求後**故意睡 10 秒**才回覆,專門製造「關機當下還在途的長請求」。
 
 打壓測的同時,另開一個終端觸發滾動更新:
 
 ```sh
 kubectl rollout restart deploy/hydra
-```
-
-**實測(tGPS=20)**——35 次請求,結果分三種:
-
-```
-Status code distribution:
-  [200] 25 responses
-
-Error distribution:
-  [5] aborted due to deadline
-  [5] connection closed before message completed
-```
-
-三種各對應什麼,分開看(**混在一起就會誤判**):
-
-- **`[5] connection closed before message completed`** —— 這 5 條就是 tGPS 太短的鐵證。rollout 時舊 pod 進
-  `Terminating`,preStop 先吃掉 15 秒,SIGTERM 後 graceful 只剩 **5 秒**(20 − 15),但 `/slow=10` 要 10 秒才
-  收得完 → 5 秒一到、tGPS 撞頂,SIGKILL 把還在途的連線全部硬砍。`-c 5` 的 5 條連線(keep-alive 全釘在這顆
-  要走的 pod 上)一起被砍,剛好 5 條。**開了 graceful,卻因為 tGPS 太短而形同虛設。**
-- **`[5] aborted due to deadline`** —— 這 5 條**不是 pod 的鍋**,是 oha 自己 `-z 60s` 到點:測試視窗收尾時
-  正好有 5 條 `/slow=10` 還在飛(每條 10 秒,撞 60 秒邊界必卡一批),oha 主動中止。與關機無關,別跟上面
-  那 5 條混為一談。
-- **`[200] 25`** —— 沒撞上那顆 pod 關機瞬間的請求,照常 10 秒收完。
-
-pod 這邊也對得起來:它以「grace period 到點被 SIGKILL」的非正常狀態收場(`kubectl describe pod` 會看到
-exit code **137** = 128 + 9,`kubectl get events` 有 grace period 相關事件)。
-
-**對照組(tGPS=45,正解)**:改回 step2、同一條 `/slow=10` 再跑一次。
-
-```sh
-kubectl apply -k deploy/step2      # tGPS 回到 45
 ```
 
 實測——Success rate **100%**:
@@ -164,27 +125,73 @@ Error distribution:
   [5] aborted due to deadline
 ```
 
-`connection closed` **歸零**。唯一動的變因是 tGPS(20 → 45),被砍的條數就從 5 掉到 0——graceful 這下有滿
-15 秒預算,`/slow=10` 全收得完。`aborted due to deadline` 一樣是 5:它跟關機無關,純粹是 oha `-z 60s` 到點時
-卡住的那批,兩組都相同。
+`/slow=10` 全收完、`connection closed` **掛零**——app 的「等」確實把在途請求收乾淨了。那 `[5] aborted due
+to deadline` 跟關機無關:是 oha 自己 `-z 60s` 到點時,還有 5 條 `/slow=10` 在飛被中止(每條 10 秒,撞 60 秒
+邊界必卡一批)。**這條雜訊先解掉,下面反例出現的 `connection closed` 才是唯一的訊號。**
 
-### keep-alive 為什麼要開?開/關的實測差異
+等有用——但前提是 K8s 容得下它等。下面把 tGPS 改短,看會怎樣。
 
-這一整段只在回答一個問題:**SIGTERM 落下那一刻,要走的那顆 pod 上,還有沒有在途請求?** 有,才有東西被斷、才測得出「tGPS 太短」;沒有,tGPS 再短也砍不到。而「有沒有」由 keep-alive 決定、「會不會被砍」由兩個死線決定——我們要做的,是讓這兩者只剩 tGPS 一個變因。
+## 反例:tGPS 太短,等了也白等
 
-**一、有沒有在途請求:keep-alive 決定。** oha 預設開 keep-alive——一條 TCP 連線打完一個請求不關,留著接著打下一個(省掉每次重建 TCP、甚至 TLS 握手);加 `--disable-keepalive` 才會每個請求開一條新連線、打完就關。差別搬到關機:
+app 想等,K8s 卻不讓它等完會怎樣?同一條壓測,只把 tGPS 從 45 改成 **20**。時間軸變這樣:
 
-- **開**:pod 進 `Terminating` 後,endpoint 被摘掉只影響新連線的分流,既有的 TCP 連線不會斷(那是 client 直連 pod 的 socket);而 pod 在 preStop 期間還沒收到 SIGTERM,照常接請求。於是 oha 沿用同一條連線,把 `/slow=10` 一直灌進這顆還在 preStop 的 pod——灌到 SIGTERM 落下那一刻,黏在它身上的每條連線都還卡著一個在途請求。
+```text
+        +==============tGPS = 20s===============+
+        |                             |         |
+        preStop                       SIGTERM   SIGKILL
+        |                             |         |
+        v                             v         v
+ -------+-----------------------------+---------+---------+---------+---> 時間
+        0s                            15s       20s       25s       30s
+```
+
+SIGKILL 在**第 20 秒**就落下;但 SIGTERM(15)後灌進來的 `/slow=10` 要到**第 25 秒**才收完,app 自己的
+shutdown 上限更要到**第 30 秒**——K8s 的鐘(20)比兩個都早,請求就被硬砍。對照剛剛 tGPS=45:SIGKILL 在
+第 45 秒,兩個都來得及。
+
+repo 裡有現成的反例 overlay [`deploy/step2-badtgps`](../deploy/step2-badtgps/):reuse step2、只把
+`terminationGracePeriodSeconds` 覆蓋成 **20**。切過去,跑**同一條 oha**(不再貼拆解):
+
+```sh
+kubectl apply -k deploy/step2-badtgps
+kubectl rollout status deploy/hydra
+kubectl exec -it deploy/client -- \
+  sh -c 'oha -z 60s -c 5 "http://hydra.zdt-tour.svc.cluster.local/slow?seconds=10"'
+# 壓測跑著時,另開終端觸發:kubectl rollout restart deploy/hydra
+```
+
+**實測(tGPS=20)**:
+
+```
+Status code distribution:
+  [200] 25 responses
+
+Error distribution:
+  [5] aborted due to deadline
+  [5] connection closed before message completed
+```
+
+跟正解一比,只多出 **`[5] connection closed before message completed`**——這 5 條就是白等的鐵證。rollout 時
+舊 pod 進 `Terminating`,preStop 先吃 15 秒,SIGTERM 後 graceful 只剩 **5 秒**(20 − 15),但 `/slow=10` 要
+10 秒才收得完 → 第 20 秒 tGPS 撞頂,SIGKILL 把 `-c 5` 那 5 條還在途的連線全部硬砍。(`[5] aborted due to
+deadline` 同前,是 oha 60 秒邊界的雜訊,不是被砍。)
+
+**開了 graceful、app 也真的在等,卻因為 tGPS 太短、等了 5 秒就被 SIGKILL 打斷——白等一場。** pod 這邊也
+對得起來:它以「grace period 到點被 SIGKILL」的非正常狀態收場(`kubectl describe pod` 會看到 exit code
+**137** = 128 + 9)。
+
+### SIGTERM 那刻,pod 手上為什麼有東西在等?——keep-alive
+
+反例成立有個隱藏前提:SIGTERM 落下那刻,那顆要走的 pod 手上**真的有在途請求**可被砍。有,才有「白等」
+可看;沒有,tGPS 再短也砍不到人。而這由 **keep-alive** 決定。
+
+oha 預設開 keep-alive——一條 TCP 連線打完一個請求不關,留著接著打下一個(省掉每次重建 TCP、甚至 TLS
+握手);加 `--disable-keepalive` 才會每個請求開一條新連線、打完就關。差別搬到關機:
+
+- **開**:pod 進 `Terminating` 後,endpoint 被摘掉只影響新連線的分流,既有的 TCP 連線不會斷(那是 client 直連 pod 的 socket);而 pod 在 preStop 期間還沒收到 SIGTERM,照常接請求。於是 oha 沿用同一條連線,把 `/slow=10` 一直灌進這顆還在 preStop 的 pod——灌到 SIGTERM 落下那刻,黏在它身上的每條連線都還卡著一個在途請求。
 - **關**:每個請求開新連線、走 Service 分流,不會再進 endpoint 已被摘掉的那顆 pod;它手上那批請求也早在 15 秒 preStop 裡跑完 → SIGTERM 時一個在途請求都沒有,tGPS 再短也沒東西可砍。
 
-**二、在途請求會不會被砍:兩個死線,誰先到算誰**(都從 pod 進 `Terminating` 起算):
-
-- **shutdown 上限**:SIGTERM 之後,程式最多再等 15 秒收完手上請求;preStop 15 + shutdown 15 = 第 30 秒,收不完就自己剪線。
-- **tGPS 的 SIGKILL**:第 tGPS 秒(20 或 45)一到就強制砍,不管收完沒。
-
-**三、讓 tGPS 成為唯一的劊子手:打 `/slow=10`。** 請求只跑 10 秒、比 shutdown 上限 15 短 → shutdown 那關一定過,能砍它的就只剩 tGPS。於是 tGPS=20 時,preStop 用掉 15 秒、只剩 5 秒 < 10 → 被 SIGKILL 砍;tGPS=45 時 SIGKILL 遠在後面,先到的 shutdown 上限也給了 15 秒 > 10 → 收得完。(若改打 `/slow=20` > 15,換成 shutdown 上限先砍,連 tGPS=45 都斷,就分不清是誰砍的了。)
-
-實測對照(全部 `/slow=10`、`-c 5`、跑滿 60 秒、中途觸發一次 rollout):
+把反例區三次跑法擺一起(全部 `/slow=10`、`-c 5`、跑滿 60 秒、中途觸發一次 rollout):
 
 | tGPS | keep-alive | `connection closed` | 誰在砍 |
 |------|-----------|:-------------------:|--------|
@@ -192,24 +199,24 @@ Error distribution:
 | 20 | 關(`--disable-keepalive`) | **0** | 沒東西可砍 |
 | 45 | 開(預設) | **0** | 都收得完 |
 
-中間那列的驗法:跟上面 tGPS=20 那組完全一樣,只多加一個 `--disable-keepalive`。
+中間那列的驗法:跟上面 tGPS=20 那組完全一樣,只多加一個 `--disable-keepalive`(此時本來就在 badtgps 上):
 
 ```sh
-kubectl apply -k deploy/step2-badtgps      # 先回到 tGPS=20
 kubectl exec -it deploy/client -- \
   sh -c 'oha -z 60s -c 5 --disable-keepalive "http://hydra.zdt-tour.svc.cluster.local/slow?seconds=10"'
 # 壓測跑著時,另開終端觸發:kubectl rollout restart deploy/hydra
 # 測完切回正解:            kubectl apply -k deploy/step2
 ```
 
-> 實測:connection closed = 0,200 回了 25 個,另外 5 個 aborted due to deadline(撞到 oha 跑滿 60 秒的邊界,不是被砍)。同一組太短的 tGPS=20,只把 keep-alive 關掉,被砍就從 5 → 0。
+> 實測:connection closed = 0,200 回了 25 個,另外 5 個 aborted due to deadline(oha 60 秒邊界,不是被砍)。
+> 同一組太短的 tGPS=20,只把 keep-alive 關掉,被砍就從 5 → 0。keep-alive 只是把問題照出來的探照燈——它讓
+> SIGTERM 那刻 pod 手上真的有在途請求在等;真兇是 tGPS 沒容納那個等。
 
-**結論:兩個條件缺一不可**——keep-alive 要開,SIGTERM 那刻 pod 上才有在途請求可砍(才逼得出 tGPS 太短的問題);`/slow` 秒數要壓在 shutdown 上限之下,shutdown 那關才會永遠過、只剩 tGPS 一個變因。keep-alive 只是把問題照出來的探照燈,真兇是 tGPS。
+## 等的極限:SSE 等不完,還是被剪
 
-## 觀察:graceful 撐到上限,但 SSE 還是斷
-
-tGPS 搭配好之後,再看 graceful 的**極限**。oha 打短的 `/version` 從 step1 起就一直是 100%(preStop 已
-罩住),看不出 step2 的邊界;要看邊界得用**永不結束的 SSE**。掛一條 SSE、觸發滾動更新:
+tGPS 搭好、短請求等得完,接著看「等」的**極限**。`/slow=10` 等得完,是因為它十秒後自己會結束;還記得
+Go 官方那**第四點**嗎——有一種連線永遠不會回到閒置,`Shutdown` 只能一直等到逾時。SSE 就是這種。掛一條
+SSE、觸發滾動更新:
 
 ```sh
 kubectl exec -it deploy/client -- sh -c \
@@ -228,5 +235,5 @@ SIGTERM 一到 app 立刻死、SSE 約 15 秒就斷。step2 的 graceful **有�
 
 ## 還沒解決
 
-graceful 的「等」是有預算的(shutdown 上限),對**永不結束**的 SSE 再大的上限也容不下。所以不能靠
-「等」,得讓 app 關機時**主動**跟 SSE 道別、收線 → [step3](step3.md)。
+「等」有兩個預算——app 的 shutdown 上限、K8s 的 tGPS——對**永不結束**的 SSE,兩個都不夠,再大也不夠。
+所以 step3 不再「等」,改成 app 關機時**主動**跟 SSE 道別、收線 → [step3](step3.md)。
