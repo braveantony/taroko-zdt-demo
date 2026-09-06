@@ -97,31 +97,43 @@ Error distribution:
 `/version` 太快,preStop 一擋就乾淨——所以它看不到 step1 真正的破口:**在途、還沒回應完的請求**。
 hydra 有個 `/slow?seconds=N` 端點會停 N 秒才回應(預設 3、上限 60),專門用來看這件事。
 
-要讓請求「SIGTERM 到時還在處理中」,`seconds` 得比 preStop(15 秒)長一點——用 20 秒:
+要讓請求「SIGTERM 到時還在處理中」,`seconds` 得比 preStop(15 秒)長一點——用 20 秒,
+並發別開高(每條請求會佔著連線 20 秒):
 
 ```sh
-# 終端 A:一條 20 秒的慢請求(還在跑時就會被 rollout 波及)
+# 左終端:持續打 /slow?seconds=20
 kubectl exec -it deploy/client -- \
-  sh -c 'time curl -s "http://hydra.zdt-tour.svc.cluster.local/slow?seconds=20"; echo'
+  sh -c 'oha -z 60s -c 5 "http://hydra.zdt-tour.svc.cluster.local/slow?seconds=20"'
 
-# 終端 B:趁它還在跑,觸發滾動更新
+# 右終端:壓測跑著時,觸發滾動更新
 kubectl rollout restart deploy/hydra
 ```
 
-預期(step1):如果這條請求所在的 pod 在它回應前就被換掉,**連線會被硬斷**——curl 收到
-`Empty reply` / 連線 reset,`time` 顯示遠不到 20 秒就中止。因為 step1 的 app 收到 SIGTERM
-立刻結束,不會等手上的請求跑完。
+### 實際輸出範例
 
-3 副本一顆一顆換(maxSurge 1),不一定第一次就 catch 到這條請求的 pod;沒被波及就再
-`rollout restart` 一次,或改用低並發連續壓測讓它必然遇上(每條請求佔著連線 20 秒,並發別開高):
+```text
+Summary:
+  Success rate: 66.67%
+  Total:        60.00 sec
+  Requests/sec: 0.3333
 
-```sh
-kubectl exec -it deploy/client -- \
-  sh -c 'oha -z 60s -c 5 "http://hydra.zdt-tour.svc.cluster.local/slow?seconds=20"'
+Status code distribution:
+  [200] 10 responses
+
+Error distribution:
+  [5] connection closed before message completed
+  [5] aborted due to deadline
 ```
 
-step1 下,每次換手會有幾條在途 `/slow` 被剪,落在 oha 的 **Error distribution**。
-到 [step2](step2.md) 打開 graceful 後,同一條 `/slow=20` 會被好好等完、回乾淨的 200。
+15 條有結論的請求裡(10 成功 + 5 失敗 = 66.67%),那 **5 條 `connection closed before message
+completed`** 就是「SIGTERM 到時還在處理」的 `/slow`——step1 裸奔的 app 立刻結束,server 還沒把
+回應送完就把連線關了。這正是 `/version` 遮掉、而 `/slow` 揪出來的破口:短請求看不到,慢請求一測就現形。
+
+(另外 5 條 `aborted due to deadline` 是 `-z 60s` 到點時還在途的請求,被壓測工具中止,不是 app 造成的;
+每條要 20 秒、又只有 5 併發,一分鐘總量本來就少。)
+
+到 [step2](step2.md) 打開 graceful 後,同一批在途 `/slow` 會被好好等完、回乾淨的 200,
+`connection closed` 就會消失。
 
 ## 還沒解決
 
