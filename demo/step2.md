@@ -16,18 +16,19 @@ tGPS ≥ preStop(15s) + shutdown 上限(15s)
 step2 把 tGPS 設成 **45**(15 preStop + 15 shutdown + 15 裕度)。`GRACEFUL` 和 `tGPS` 是一組的,
 少搭一個就出事——下面「反例」親眼看。
 
-tGPS 這段預算裡,依序經過三個重點階段:
+tGPS 這段預算裡,依序經過三個重點階段(時間軸照比例):
 
-```mermaid
-flowchart LR
-    subgraph TGP["Termination Grace Period(tGPS = 45s,含 preStop)"]
-      direction LR
-      A["preStop Hook 執行<br/>關機流程開始<br/>t = 0s"]
-      B["SIGTERM 送出<br/>t = 15s"]
-      C["SIGKILL 送出<br/>強制終止<br/>t = 45s"]
-      A --> B --> C
-    end
+```text
+        +=======Termination Grace Period = 45s=======+
+        |              |                             |
+        preStop Hook   SIGTERM                       SIGKILL
+        |              |                             |
+        v              v                             v
+ -------+--------------+-----------------------------+-------> 時間
+        0s             15s                           45s
 ```
+
+`preStop`=關機緩衝(0→15s)、`SIGTERM`=送關機訊號(15s,graceful 從這開始跑)、`SIGKILL`=強制終止(45s,tGPS 到點)。
 
 **背後的 code**([`internal/server/server.go`](../images/hydra/internal/server/server.go) 的關機序列):
 `GRACEFUL=on` 時 main 有註冊 SIGTERM handler,`Run` 收到訊號後走到 `httpSrv.Shutdown`——停收新連線、
