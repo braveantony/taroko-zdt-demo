@@ -184,6 +184,20 @@ Error distribution:
 
 換句話說,step0 的失敗只會以「連線斷掉」的形式出現在 Error distribution,永遠不會變成一個收得好好的 HTTP 狀態碼。
 
+## 盤點:step0 暴露了哪些問題
+
+step0 的 oha(打 `/version`、約 120 秒)收尾是 99.83% 成功——但那 266 個連線層錯誤,加上 `/slow`、SSE 兩個 `/version` 照不到的破口,才是重點。整理成三類,對應後面四步:
+
+| # | 問題 | 在哪看到 | 根因 | 誰來補 |
+|---|---|---|---|---|
+| ① | **新連線被拒**(`Connection refused` ×254、`connection error` ×10) | oha `/version` | 沒 preStop:pod 秒殺,endpoint 還沒更新完新流量就打進來 | **step1** preStop |
+| ② | **在途連線被硬斷**(`Connection reset` / `connection closed before message completed`) | oha `/version` 只各冒 1 個;完整樣貌要用 `/slow`(step1 實測 5 個) | 沒 graceful:收 SIGTERM 立即死,手上的請求被剪 | **step2** graceful;長連線→**step3** drain |
+| ③ | **狀態隨 pod 消失**(導覽進度歸零) | 要掛 SSE 串流才看得到(見下方選用段) | 進度存 pod 記憶體,pod 一死就沒了 | **step4** valkey |
+
+(那 4 個 `aborted due to deadline` 不算問題,是壓測 `-z` 時間到的收尾。)
+
+一句話:**step0 = 連線被拒、在途被斷、狀態歸零**;step1→4 就是逐一把這三類消掉。
+
 ### (選用)直接看 SSE 連線被硬斷
 
 hydra 的導覽事件流是長連線,最能體現「連線存亡」。`/tour/events` 需要帶 `hydra_session` cookie
