@@ -49,7 +49,7 @@ kubectl rollout status deploy/hydra
 
 ```sh
 kubectl exec -it deploy/client -- \
-  sh -c 'oha -z 120s -c 20 --disable-keepalive "$TARGET"'
+  sh -c 'oha -z 60s -c 20 --disable-keepalive "$TARGET"'
 ```
 
 壓測跑著時,另開終端觸發滾動更新:
@@ -73,7 +73,7 @@ kubectl rollout restart deploy/hydra
 
 ### 實際輸出範例
 
-一輪 120 秒、期間觸發滾動更新,oha 收尾的統計:
+期間觸發滾動更新的一輪壓測,oha 收尾的統計(此例跑了約 120 秒):
 
 ```text
 Summary:
@@ -88,11 +88,42 @@ Error distribution:
   [7] aborted due to deadline
 ```
 
-16 萬個請求、**100% 成功**,連線層錯誤掛零(那 7 個 `aborted due to deadline` 是 `-z 120s` 到點、
-還在途的請求被中止,與滾動更新無關)。step0 同樣的壓測有 266 個 `Connection refused` 等連線錯誤,
-到 step1 直接歸零——這就是 preStop 對「短請求換手」的效果。
+16 萬個請求、**100% 成功**,連線層錯誤掛零(那 7 個 `aborted due to deadline` 是 `-z`(壓測時間)
+到點、還在途的請求被中止,與滾動更新無關)。step0 同樣的壓測有 266 個 `Connection refused` 等連線
+錯誤,到 step1 直接歸零——這就是 preStop 對「短請求換手」的效果。
+
+## 用 /slow 看在途請求的破口
+
+`/version` 太快,preStop 一擋就乾淨——所以它看不到 step1 真正的破口:**在途、還沒回應完的請求**。
+hydra 有個 `/slow?seconds=N` 端點會停 N 秒才回應(預設 3、上限 60),專門用來看這件事。
+
+要讓請求「SIGTERM 到時還在處理中」,`seconds` 得比 preStop(15 秒)長一點——用 20 秒:
+
+```sh
+# 終端 A:一條 20 秒的慢請求(還在跑時就會被 rollout 波及)
+kubectl exec -it deploy/client -- \
+  sh -c 'time curl -s "http://hydra.zdt-tour.svc.cluster.local/slow?seconds=20"; echo'
+
+# 終端 B:趁它還在跑,觸發滾動更新
+kubectl rollout restart deploy/hydra
+```
+
+預期(step1):如果這條請求所在的 pod 在它回應前就被換掉,**連線會被硬斷**——curl 收到
+`Empty reply` / 連線 reset,`time` 顯示遠不到 20 秒就中止。因為 step1 的 app 收到 SIGTERM
+立刻結束,不會等手上的請求跑完。
+
+3 副本一顆一顆換(maxSurge 1),不一定第一次就 catch 到這條請求的 pod;沒被波及就再
+`rollout restart` 一次,或改用低並發連續壓測讓它必然遇上(每條請求佔著連線 20 秒,並發別開高):
+
+```sh
+kubectl exec -it deploy/client -- \
+  sh -c 'oha -z 60s -c 5 "http://hydra.zdt-tour.svc.cluster.local/slow?seconds=20"'
+```
+
+step1 下,每次換手會有幾條在途 `/slow` 被剪,落在 oha 的 **Error distribution**。
+到 [step2](step2.md) 打開 graceful 後,同一條 `/slow=20` 會被好好等完、回乾淨的 200。
 
 ## 還沒解決
 
-短請求換手已經乾淨,但**在途 / 長連線**在 SIGTERM 到來時還是被硬斷。要讓 app 收到 SIGTERM 後
-先把手上的請求好好收完,得靠程式層的優雅關機 → [step2](step2.md)。
+短請求換手已經乾淨,但**在途 / 長連線**在 SIGTERM 到來時還是被硬斷(上面的 `/slow` 就是證據)。
+要讓 app 收到 SIGTERM 後先把手上的請求好好收完,得靠程式層的優雅關機 → [step2](step2.md)。
