@@ -196,7 +196,7 @@ preStop 15 之後只剩 5 秒 < 10 → SIGKILL 砍(5 條);tGPS=45 時還有 15 �
 | tGPS | keep-alive | `connection closed` | 誰在砍 |
 |------|-----------|:-------------------:|--------|
 | 20 | 開(oha 預設) | **5** | tGPS(只剩 5 秒 < 10) |
-| 20 | 關(`--disable-keepalive`) | 待跑(預期 **0**) | 沒東西可砍 |
+| 20 | 關(`--disable-keepalive`) | **0**(實測) | 沒東西可砍 |
 | 45 | 開(oha 預設) | **0** | 都收得完 |
 
 驗證中間那列——跟上面 tGPS=20 一模一樣的跑法,**只多 `--disable-keepalive` 一個 flag**:
@@ -209,8 +209,9 @@ kubectl exec -it deploy/client -- \
 # 測完切回正解:            kubectl apply -k deploy/step2
 ```
 
-> 這列跑完把 oha 貼給我補真實數字。預期 **0**——正好證明 keep-alive 是「把請求塞到關機邊界、逼出 tGPS 問題」
-> 的關鍵,tGPS 太短才是真兇,keep-alive 只是照出它的探照燈。
+> 實測結果:`connection closed` = **0**、`[200] 25`、`[5] aborted due to deadline`(oha 60s 邊界)。同樣壞的
+> tGPS=20,只把 keep-alive 關掉,被砍條數就從 **5 → 0**——證明 keep-alive 是「把請求塞到關機邊界、逼出 tGPS
+> 問題」的探照燈;tGPS 太短才是真兇。
 
 **所以兩個條件缺一不可**:keep-alive 要**開**(才逼得出 tGPS 極限)、`/slow` 秒數要**壓在 shutdown 上限之下**
 (10 < 15,讓 shutdown 那關永遠過、tGPS 成為唯一變因)。先前打 `/slow=20`(> 15)壞就壞在後者:shutdown 上限
