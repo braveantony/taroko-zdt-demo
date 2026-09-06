@@ -186,10 +186,12 @@ preStop 15 之後只剩 5 秒 < 10 → SIGKILL 砍(5 條);tGPS=45 時還有 15 �
 - **開(預設)**:5 條連線各自建好後**一直用同一條**。連線一旦連上某顆 pod 就**黏在那顆 pod**——TCP 連線不會每個請求重新經過 Service 分流。
 - **關(`--disable-keepalive`)**:**每個請求開一條新連線、打完就關**。每條新連線都重新過一次 Service 分流,只會落到當下 Ready 的 pod。
 
-差別搬到關機情境,正好是「能不能演出 tGPS 問題」的關鍵:
+**差別的核心就一句話:流量會不會沿著「既有連線」,持續送進正處於 preStop 階段的 pod。**
 
-- **開**:pod 進 preStop 時 endpoint 雖已摘掉,但**既有的 TCP 連線還連著**,oha 沿用它繼續把 `/slow=10` 灌進這顆要走的 pod → **SIGTERM 那一刻 pod 上一定卡著在途請求 → 逼出 tGPS 邊界**。
-- **關**:pod 一進 `Terminating`、endpoint 被摘,**新連線就不再進這顆 pod**;它身上先前的請求早在 preStop 15 秒內就跑完 → SIGTERM 時沒有卡著的請求 → **就算 tGPS=20 也砍不到,tGPS 問題被藏住**。
+- **開**:pod 進 `Terminating` 後,endpoint 被摘除**只擋「新連線」的路由,不會斷掉「既有的 TCP 連線」**(那是 client ↔ pod 的直接 socket);而 pod 在 **preStop 期間還沒收到 SIGTERM、仍正常服務**。於是 oha 沿用同一條既有連線,把 `/slow=10` 源源灌進這顆正在 preStop 的 pod——**一路灌到 preStop 結束(SIGTERM)那一刻,pod 上一定還卡著一條在途請求**。這條在途請求,才輪得到後面的 tGPS / shutdown 死線去砍 → 逼出 tGPS 邊界。
+- **關**:每個請求開新連線,新連線走 Service 分流、**不會再進已摘掉 endpoint 的 pod**;preStop 中的 pod 收不到新流量,它先前那批請求也早在 preStop 15 秒內就跑完 → **SIGTERM 那一刻 pod 上沒有任何在途請求 → 沒東西可砍**,就算 tGPS=20 也一樣。
+
+一句話收:keep-alive 開/關,真正決定的是「**SIGTERM 那一刻,那顆要走的 pod 上還有沒有在途請求**」——有(開),才輪得到 tGPS 去砍它;沒有(關),tGPS 再短也砍不到,問題被藏住。
 
 實測對照(全部 `/slow=10`、`-c 5`、跑滿 60 秒、中途觸發一次 rollout):
 
