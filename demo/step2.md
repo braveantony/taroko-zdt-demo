@@ -170,38 +170,29 @@ Error distribution:
 
 ### keep-alive 為什麼要開?開/關的實測差異
 
-**先搞清楚一件事:關機時,卡在 SIGTERM 那一刻的請求,會被誰砍?** 有兩個死線,誰先到算誰(都從 pod
-進 `Terminating` 起算):
+這一整段只在回答一個問題:**SIGTERM 落下那一刻,要走的那顆 pod 上,還有沒有在途請求?** 有,才有東西被斷、才測得出「tGPS 太短」;沒有,tGPS 再短也砍不到。而「有沒有」由 keep-alive 決定、「會不會被砍」由兩個死線決定——我們要做的,是讓這兩者只剩 tGPS 一個變因。
 
-- **shutdown 上限**:SIGTERM 之後,程式最多再等 15 秒把手上請求收完 → 第 15(preStop)+ 15 = **第 30 秒**,收不完程式自己剪線。
-- **tGPS 的 SIGKILL**:第 tGPS 秒(20 或 45)一到,強制砍,不管收完沒。
+**一、有沒有在途請求:keep-alive 決定。** oha 預設開 keep-alive——一條 TCP 連線打完一個請求不關,留著接著打下一個(省掉每次重建 TCP、甚至 TLS 握手);加 `--disable-keepalive` 才會每個請求開一條新連線、打完就關。差別搬到關機:
 
-`/slow=10` 只要 10 秒,**比 shutdown 上限 15 短 → shutdown 那關一定過,能砍它的就只剩 tGPS**:tGPS=20 時
-preStop 15 之後只剩 5 秒 < 10 → SIGKILL 砍(5 條);tGPS=45 時還有 15 秒 > 10 → 收得完(0 條)。這就是上面
-兩組數據的由來。
+- **開**:pod 進 `Terminating` 後,endpoint 被摘掉只影響新連線的分流,既有的 TCP 連線不會斷(那是 client 直連 pod 的 socket);而 pod 在 preStop 期間還沒收到 SIGTERM,照常接請求。於是 oha 沿用同一條連線,把 `/slow=10` 一直灌進這顆還在 preStop 的 pod——灌到 SIGTERM 落下那一刻,黏在它身上的每條連線都還卡著一個在途請求。
+- **關**:每個請求開新連線、走 Service 分流,不會再進 endpoint 已被摘掉的那顆 pod;它手上那批請求也早在 15 秒 preStop 裡跑完 → SIGTERM 時一個在途請求都沒有,tGPS 再短也沒東西可砍。
 
-**keep-alive 是什麼?** HTTP/1.1 預設開:**一條 TCP 連線打完一個請求不關掉,接著重複用來打下一個**,省掉
-每次重建 TCP(甚至 TLS)握手的成本。oha 沒加 `--disable-keepalive` 就是開著。開跟關,oha 的行為差在:
+**二、在途請求會不會被砍:兩個死線,誰先到算誰**(都從 pod 進 `Terminating` 起算):
 
-- **開(預設)**:5 條連線各自建好後**一直用同一條**。連線一旦連上某顆 pod 就**黏在那顆 pod**——TCP 連線不會每個請求重新經過 Service 分流。
-- **關(`--disable-keepalive`)**:**每個請求開一條新連線、打完就關**。每條新連線都重新過一次 Service 分流,只會落到當下 Ready 的 pod。
+- **shutdown 上限**:SIGTERM 之後,程式最多再等 15 秒收完手上請求;preStop 15 + shutdown 15 = 第 30 秒,收不完就自己剪線。
+- **tGPS 的 SIGKILL**:第 tGPS 秒(20 或 45)一到就強制砍,不管收完沒。
 
-**差別的核心就一句話:流量會不會沿著「既有連線」,持續送進正處於 preStop 階段的 pod。**
-
-- **開**:pod 進 `Terminating` 後,endpoint 被摘除**只擋「新連線」的路由,不會斷掉「既有的 TCP 連線」**(那是 client ↔ pod 的直接 socket);而 pod 在 **preStop 期間還沒收到 SIGTERM、仍正常服務**。於是 oha 沿用同一條既有連線,把 `/slow=10` 源源灌進這顆正在 preStop 的 pod——**一路灌到 preStop 結束(SIGTERM)那一刻,pod 上一定還卡著一條在途請求**。這條在途請求,才輪得到後面的 tGPS / shutdown 死線去砍 → 逼出 tGPS 邊界。
-- **關**:每個請求開新連線,新連線走 Service 分流、**不會再進已摘掉 endpoint 的 pod**;preStop 中的 pod 收不到新流量,它先前那批請求也早在 preStop 15 秒內就跑完 → **SIGTERM 那一刻 pod 上沒有任何在途請求 → 沒東西可砍**,就算 tGPS=20 也一樣。
-
-一句話收:keep-alive 開/關,真正決定的是「**SIGTERM 那一刻,那顆要走的 pod 上還有沒有在途請求**」——有(開),才輪得到 tGPS 去砍它;沒有(關),tGPS 再短也砍不到,問題被藏住。
+**三、讓 tGPS 成為唯一的劊子手:打 `/slow=10`。** 請求只跑 10 秒、比 shutdown 上限 15 短 → shutdown 那關一定過,能砍它的就只剩 tGPS。於是 tGPS=20 時,preStop 用掉 15 秒、只剩 5 秒 < 10 → 被 SIGKILL 砍;tGPS=45 時 SIGKILL 遠在後面,先到的 shutdown 上限也給了 15 秒 > 10 → 收得完。(若改打 `/slow=20` > 15,換成 shutdown 上限先砍,連 tGPS=45 都斷,就分不清是誰砍的了。)
 
 實測對照(全部 `/slow=10`、`-c 5`、跑滿 60 秒、中途觸發一次 rollout):
 
 | tGPS | keep-alive | `connection closed` | 誰在砍 |
 |------|-----------|:-------------------:|--------|
-| 20 | 開(oha 預設) | **5** | tGPS(只剩 5 秒 < 10) |
-| 20 | 關(`--disable-keepalive`) | **0**(實測) | 沒東西可砍 |
-| 45 | 開(oha 預設) | **0** | 都收得完 |
+| 20 | 開(預設) | **5** | tGPS(只剩 5 秒 < 10) |
+| 20 | 關(`--disable-keepalive`) | **0** | 沒東西可砍 |
+| 45 | 開(預設) | **0** | 都收得完 |
 
-驗證中間那列——跟上面 tGPS=20 一模一樣的跑法,**只多 `--disable-keepalive` 一個 flag**:
+中間那列的驗法:跟上面 tGPS=20 那組完全一樣,只多加一個 `--disable-keepalive`。
 
 ```sh
 kubectl apply -k deploy/step2-badtgps      # 先回到 tGPS=20
@@ -211,13 +202,9 @@ kubectl exec -it deploy/client -- \
 # 測完切回正解:            kubectl apply -k deploy/step2
 ```
 
-> 實測結果:`connection closed` = **0**、`[200] 25`、`[5] aborted due to deadline`(oha 60s 邊界)。同樣壞的
-> tGPS=20,只把 keep-alive 關掉,被砍條數就從 **5 → 0**——證明 keep-alive 是「把請求塞到關機邊界、逼出 tGPS
-> 問題」的探照燈;tGPS 太短才是真兇。
+> 實測:connection closed = 0,200 回了 25 個,另外 5 個 aborted due to deadline(撞到 oha 跑滿 60 秒的邊界,不是被砍)。同一組太短的 tGPS=20,只把 keep-alive 關掉,被砍就從 5 → 0。
 
-**所以兩個條件缺一不可**:keep-alive 要**開**(才逼得出 tGPS 極限)、`/slow` 秒數要**壓在 shutdown 上限之下**
-(10 < 15,讓 shutdown 那關永遠過、tGPS 成為唯一變因)。先前打 `/slow=20`(> 15)壞就壞在後者:shutdown 上限
-先砍,連 tGPS=45 都斷,根本分不清是誰砍的。
+**結論:兩個條件缺一不可**——keep-alive 要開,SIGTERM 那刻 pod 上才有在途請求可砍(才逼得出 tGPS 太短的問題);`/slow` 秒數要壓在 shutdown 上限之下,shutdown 那關才會永遠過、只剩 tGPS 一個變因。keep-alive 只是把問題照出來的探照燈,真兇是 tGPS。
 
 ## 觀察:graceful 撐到上限,但 SSE 還是斷
 
