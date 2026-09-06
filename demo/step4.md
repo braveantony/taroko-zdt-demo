@@ -35,7 +35,7 @@ func (h *Health) IsReady() bool {
 
 ## 這步的 Deployment 關鍵設定
 
-apply 之前先渲染出來看(只在本機組出 yaml,不碰叢集)——這步的輸出除了 hydra,還會多出
+apply 之前先組出來看(只在本機組出 yaml,不碰叢集)——這步的輸出除了 hydra,還會多出
 一個 Valkey 的 Deployment 與 Service:
 
 ```sh

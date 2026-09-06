@@ -43,7 +43,7 @@ step0 對這個底座**什麼關機處理都沒加**:收到 SIGTERM 就直接結
 
 ## 這步的 Deployment 關鍵設定
 
-apply 之前,先把這步會套用的 manifest 渲染出來看(只在本機把 yaml 組出來,不碰叢集):
+apply 之前,先把這步會套用的 manifest 組出來看(只在本機把 yaml 組出來,不碰叢集):
 
 ```sh
 kubectl kustomize deploy/step0

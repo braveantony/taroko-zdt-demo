@@ -15,7 +15,7 @@ kubelet 則執行 `preStop`,讓 process 先多活 15 秒再收到 SIGTERM。注�
 
 ## 這步的 Deployment 關鍵設定
 
-apply 之前先渲染出來看(只在本機組出 yaml,不碰叢集):
+apply 之前先組出來看(只在本機組出 yaml,不碰叢集):
 
 ```sh
 kubectl kustomize deploy/step1
