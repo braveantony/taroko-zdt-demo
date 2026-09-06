@@ -9,6 +9,20 @@ app 停止接新連線、把在途的 HTTP 請求處理完再退出;這個等待
 順帶把 `terminationGracePeriodSeconds` 從 30 拉到 45:preStop 先睡 15 秒、shutdown 最多再等 15 秒,
 原本的 30 秒剛好貼著上限,拉到 45 留點餘裕,免得 SIGKILL 搶先到。
 
+**背後的 code**([`internal/server/server.go`](../images/hydra/internal/server/server.go) 的關機序列):
+`GRACEFUL=on` 時 main 有註冊 SIGTERM handler,`Run` 收到訊號後走到 `httpSrv.Shutdown`——它停收新連線、
+**等在途請求跑完**,這就是 step1 被剪的那些 `/slow` 到這步能收完的原因:
+
+```go
+shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout) // 預設 15s
+defer cancel()
+// Shutdown:停收新連線,但等在途請求做完再回
+if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+    httpSrv.Close()   // 逾時(例如永不結束的 SSE)才強制剪線
+    return fmt.Errorf("shutdown timeout exceeded: %w", err)
+}
+```
+
 ## 這步的 Deployment 關鍵設定
 
 apply 之前先渲染出來看(只在本機組出 yaml,不碰叢集):

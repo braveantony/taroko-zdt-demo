@@ -11,6 +11,28 @@ step3 的問題:連線善終了,但進度存在 pod 的記憶體,pod 一換就�
   readiness 不會翻紅。)
 - 多部署一顆 Valkey(單副本、無持久化;`apply` 時一起建起來)。
 
+**背後的 code**([`internal/server/server.go`](../images/hydra/internal/server/server.go)):進度改由
+Valkey 版的 StateStore 讀寫(所有 pod 共用同一個 Valkey),啟動時先 `Ping` 一次做 fail-fast;`/readyz`
+只有在啟動完成後才回 200:
+
+```go
+// Run():valkey 後端啟動時先確認連得上,連不上就直接退出(不無聲降級為記憶體)
+if s.cfg.StateBackend == "valkey" {
+    if err := s.store.Ping(pingCtx); err != nil {
+        return fmt.Errorf("valkey 狀態庫不可用: %w", err)
+    }
+}
+// …Serve 起來(且上面 Ping 過)之後,才把就緒翻成 ready
+s.health.SetReady()
+```
+
+```go
+// health.go:/readyz 依這個狀態機;starting / draining 都回 503,只有 ready 才 200
+func (h *Health) IsReady() bool {
+    return h.state.Load() == stateReady   // starting → ready → draining(單向)
+}
+```
+
 ## 這步的 Deployment 關鍵設定
 
 apply 之前先渲染出來看(只在本機組出 yaml,不碰叢集)——這步的輸出除了 hydra,還會多出

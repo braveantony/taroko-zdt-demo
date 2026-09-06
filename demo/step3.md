@@ -5,6 +5,28 @@ step2 的問題:SSE 長連線在關機時等不到自己結束,撞 shutdown 上�
 **這步加的**(相對 step2 的唯一差別):`HYDRA_SSE_DRAIN=on`。app 關機時主動對每條 SSE 送出
 `bye` 事件,然後由 server 端關閉連線。手上沒有掛著的長連線,`Shutdown` 幾秒內就能完成、exit 0。
 
+**背後的 code**:關機序列在 `Shutdown` 之前先排空 SSE,一條鏈路走完:
+
+```go
+// server.go:SSE_DRAIN=on 才廣播收線(否則就跟 step2 一樣被永不結束的 SSE 卡到逾時)
+if s.cfg.SSEDrain {
+    s.tour.Hub().Drain()
+}
+
+// hub.go:關閉每條連線的 bye channel
+func (h *Hub) Drain() {
+    h.draining = true
+    for _, ch := range h.conns {
+        close(ch)
+    }
+}
+
+// handler.go:SSE handler 看到 bye channel 關閉 → 送 bye 事件、收線返回
+case <-bye:
+    t.writeEvent(w, fl, "", "bye", map[string]string{"reason": "pod shutting down"})
+    return
+```
+
 ## 這步的 Deployment 關鍵設定
 
 apply 之前先渲染出來看(只在本機組出 yaml,不碰叢集):

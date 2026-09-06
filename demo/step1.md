@@ -129,6 +129,33 @@ Error distribution:
 completed`** 就是「SIGTERM 到時還在處理」的 `/slow`——step1 裸奔的 app 立刻結束,server 還沒把
 回應送完就把連線關了。這正是 `/version` 遮掉、而 `/slow` 揪出來的破口:短請求看不到,慢請求一測就現形。
 
+**背後的 code**([`images/hydra/cmd/hydra/main.go`](../images/hydra/cmd/hydra/main.go)):`HYDRA_GRACEFUL=off`
+讓 main **不註冊** SIGTERM handler,收到 SIGTERM 就由 Go runtime 直接終止程序——在途 `/slow` 於是被硬斷:
+
+```go
+signals := make(chan os.Signal, 2)
+if cfg.Graceful {
+    signal.Notify(signals, syscall.SIGTERM, os.Interrupt)
+} else {
+    // 不註冊 handler → 收到 SIGTERM 由 Go runtime 直接終止程序(exit 143),
+    // 不 Shutdown、不等在途連線
+    logger.Warn("graceful shutdown DISABLED — SIGTERM 將直接終止程序")
+}
+```
+
+而 `/slow` 本身([`internal/server/handlers.go`](../images/hydra/internal/server/handlers.go))就是停 N 秒才回應、
+用來製造「在途請求」的端點:
+
+```go
+// GET /slow?seconds=N(預設 3、上限 60)
+timer := time.NewTimer(d)
+select {
+case <-timer.C:                 // 睡滿 N 秒 → 正常回應
+case <-r.Context().Done():      // 連線被關(pod 死/ client 斷)→ 提早結束
+    return
+}
+```
+
 (另外 5 條 `aborted due to deadline` 是 `-z 60s` 到點時還在途的請求,被壓測工具中止,不是 app 造成的;
 每條要 20 秒、又只有 5 併發,一分鐘總量本來就少。)
 
