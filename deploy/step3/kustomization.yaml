@@ -1,0 +1,61 @@
+# step3 +drain:相對 step2 只多一處——SSE_DRAIN off→on。
+# 效果:關機時 app 主動對每條 SSE 廣播 bye、把連線收乾淨 → 連線自己結束 →
+#   http.Server.Shutdown 幾秒內乾淨完成、exit 0。連線層做到零停機,不再撞 shutdown 上限。
+# 天花板:進度仍存 pod 記憶體,pod 一死進度就沒了,瀏覽器重連會從第 1 站重新開始。
+#   → 逼出 step4 的狀態外部化。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../common
+
+patches:
+  - target: {kind: Deployment, name: hydra}
+    patch: |-
+      # ── 固定跑在 hydra tier(w1-3),與 client(w4)分開 ──
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value: {tier: hydra}
+      # ── pod 分散在不同 node ──
+      - op: add
+        path: /spec/template/spec/affinity
+        value:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector: {matchLabels: {app: hydra}}
+                  topologyKey: kubernetes.io/hostname
+      # ── 更新策略:先起新、後刪舊,容量不下降 ──
+      - op: add
+        path: /spec/strategy
+        value:
+          type: RollingUpdate
+          rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+      # ── 關機時限 ──
+      - op: add
+        path: /spec/template/spec/terminationGracePeriodSeconds
+        value: 45
+      # ── preStop 緩衝:摘除 endpoint 後多撐 15 秒 ──
+      - op: add
+        path: /spec/template/spec/containers/0/lifecycle
+        value:
+          preStop:
+            sleep:
+              seconds: 15
+      # ── liveness ──
+      - op: add
+        path: /spec/template/spec/containers/0/livenessProbe
+        value:
+          httpGet: {path: /healthz, port: http}
+          periodSeconds: 10
+          failureThreshold: 3
+          timeoutSeconds: 1
+      # ── app 參數:優雅關機 + 排空 SSE(drain=on);進度仍在記憶體 ──
+      - op: add
+        path: /spec/template/spec/containers/0/env
+        value:
+          - {name: HYDRA_GRACEFUL, value: "on"}
+          - {name: HYDRA_STATE_BACKEND, value: memory}
+          - {name: HYDRA_SSE_DRAIN, value: "on"}
+          - {name: HYDRA_TOUR_INTERVAL_SECONDS, value: "10"}

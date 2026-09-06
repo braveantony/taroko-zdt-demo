@@ -1,0 +1,61 @@
+# step1 +preStop:step0 之上多一段 preStop 緩衝(K8s 原生 sleep action;
+# distroless 無 shell,不能用 exec)。app 仍不處理關機(GRACEFUL=off)。
+# 效果:pod 進 Terminating 會先被摘除 endpoint,preStop 的 15 秒裡 app 還活著、
+#   新流量不再打進來、在途連線多撐一會。
+# 天花板:15 秒一到 SIGTERM 送達,app 仍是立刻結束、在途連線照樣硬斷。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../common
+
+patches:
+  - target: {kind: Deployment, name: hydra}
+    patch: |-
+      # ── 固定跑在 hydra tier(w1-3),與 client(w4)分開 ──
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value: {tier: hydra}
+      # ── pod 分散在不同 node ──
+      - op: add
+        path: /spec/template/spec/affinity
+        value:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector: {matchLabels: {app: hydra}}
+                  topologyKey: kubernetes.io/hostname
+      # ── 更新策略:先起新、後刪舊,容量不下降 ──
+      - op: add
+        path: /spec/strategy
+        value:
+          type: RollingUpdate
+          rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+      # ── 關機時限 ──
+      - op: add
+        path: /spec/template/spec/terminationGracePeriodSeconds
+        value: 30
+      # ── preStop 緩衝(step1 新增):摘除 endpoint 後多撐 15 秒 ──
+      - op: add
+        path: /spec/template/spec/containers/0/lifecycle
+        value:
+          preStop:
+            sleep:
+              seconds: 15
+      # ── liveness ──
+      - op: add
+        path: /spec/template/spec/containers/0/livenessProbe
+        value:
+          httpGet: {path: /healthz, port: http}
+          periodSeconds: 10
+          failureThreshold: 3
+          timeoutSeconds: 1
+      # ── app 參數:仍不處理關機(graceful=off / 記憶體 / 不排水) ──
+      - op: add
+        path: /spec/template/spec/containers/0/env
+        value:
+          - {name: HYDRA_GRACEFUL, value: "off"}
+          - {name: HYDRA_STATE_BACKEND, value: memory}
+          - {name: HYDRA_SSE_DRAIN, value: "off"}
+          - {name: HYDRA_TOUR_INTERVAL_SECONDS, value: "10"}

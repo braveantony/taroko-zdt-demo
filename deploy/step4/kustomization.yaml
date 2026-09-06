@@ -1,0 +1,73 @@
+# step4 +valkey/readiness:相對 step3 多三處——STATE_BACKEND memory→valkey、
+# 加回 readinessProbe(/readyz)、外加部署一顆 Valkey。
+# 效果:進度存到 Valkey,pod 換掉由新 pod 接手同一份進度、瀏覽器重連續播不回退;
+#   app 啟動要連 Valkey、載入狀態有耗時,readiness 在這段期間擋住流量、就緒才收 →
+#   連線與狀態都零停機。
+# namespace 設在本層:valkey 的 manifest 沒帶 namespace,靠這裡一起落到 zdt-tour。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: zdt-tour
+
+resources:
+  - ../common
+  - ../valkey
+
+patches:
+  - target: {kind: Deployment, name: hydra}
+    patch: |-
+      # ── 固定跑在 hydra tier(w1-3),與 client(w4)分開 ──
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value: {tier: hydra}
+      # ── pod 分散在不同 node ──
+      - op: add
+        path: /spec/template/spec/affinity
+        value:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector: {matchLabels: {app: hydra}}
+                  topologyKey: kubernetes.io/hostname
+      # ── 更新策略:先起新、後刪舊,容量不下降 ──
+      - op: add
+        path: /spec/strategy
+        value:
+          type: RollingUpdate
+          rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+      # ── 關機時限 ──
+      - op: add
+        path: /spec/template/spec/terminationGracePeriodSeconds
+        value: 45
+      # ── preStop 緩衝:摘除 endpoint 後多撐 15 秒 ──
+      - op: add
+        path: /spec/template/spec/containers/0/lifecycle
+        value:
+          preStop:
+            sleep:
+              seconds: 15
+      # ── liveness ──
+      - op: add
+        path: /spec/template/spec/containers/0/livenessProbe
+        value:
+          httpGet: {path: /healthz, port: http}
+          periodSeconds: 10
+          failureThreshold: 3
+          timeoutSeconds: 1
+      # ── readiness(step4 生效):新 pod 就緒(連上 Valkey、載入狀態)才收流量 ──
+      - op: add
+        path: /spec/template/spec/containers/0/readinessProbe
+        value:
+          httpGet: {path: /readyz, port: http}
+          periodSeconds: 2
+          failureThreshold: 1
+          timeoutSeconds: 1
+      # ── app 參數:優雅關機 + 排空 + 狀態存 Valkey(續播不回退) ──
+      - op: add
+        path: /spec/template/spec/containers/0/env
+        value:
+          - {name: HYDRA_GRACEFUL, value: "on"}
+          - {name: HYDRA_STATE_BACKEND, value: valkey}
+          - {name: HYDRA_SSE_DRAIN, value: "on"}
+          - {name: HYDRA_TOUR_INTERVAL_SECONDS, value: "10"}

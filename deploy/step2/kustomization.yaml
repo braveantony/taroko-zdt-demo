@@ -1,0 +1,61 @@
+# step2 +graceful:相對 step1 只多兩處——GRACEFUL off→on、tGPS 30→45
+# (給優雅關機足夠時間:15 preStop + 15 shutdown 上限 + 15 裕度)。
+# 效果:收到 SIGTERM 不再立刻死,先停收新連線、把在途的一般 HTTP 請求處理完再退出。
+# 天花板:SSE 是永不結束的長連線 → http.Server.Shutdown 等不到它結束、撞 15 秒 shutdown
+#   上限後強制剪線。SSE 還是斷,只是晚了 15 秒。→ 逼出 step3 的排空。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../common
+
+patches:
+  - target: {kind: Deployment, name: hydra}
+    patch: |-
+      # ── 固定跑在 hydra tier(w1-3),與 client(w4)分開 ──
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value: {tier: hydra}
+      # ── pod 分散在不同 node ──
+      - op: add
+        path: /spec/template/spec/affinity
+        value:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector: {matchLabels: {app: hydra}}
+                  topologyKey: kubernetes.io/hostname
+      # ── 更新策略:先起新、後刪舊,容量不下降 ──
+      - op: add
+        path: /spec/strategy
+        value:
+          type: RollingUpdate
+          rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+      # ── 關機時限:給優雅關機更多時間(step2 由 30 → 45) ──
+      - op: add
+        path: /spec/template/spec/terminationGracePeriodSeconds
+        value: 45
+      # ── preStop 緩衝:摘除 endpoint 後多撐 15 秒 ──
+      - op: add
+        path: /spec/template/spec/containers/0/lifecycle
+        value:
+          preStop:
+            sleep:
+              seconds: 15
+      # ── liveness ──
+      - op: add
+        path: /spec/template/spec/containers/0/livenessProbe
+        value:
+          httpGet: {path: /healthz, port: http}
+          periodSeconds: 10
+          failureThreshold: 3
+          timeoutSeconds: 1
+      # ── app 參數:優雅關機開啟(graceful=on),但仍不排空 SSE ──
+      - op: add
+        path: /spec/template/spec/containers/0/env
+        value:
+          - {name: HYDRA_GRACEFUL, value: "on"}
+          - {name: HYDRA_STATE_BACKEND, value: memory}
+          - {name: HYDRA_SSE_DRAIN, value: "off"}
+          - {name: HYDRA_TOUR_INTERVAL_SECONDS, value: "10"}

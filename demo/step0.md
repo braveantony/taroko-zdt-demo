@@ -127,7 +127,17 @@ kubectl --context kind-zdt -n zdt-tour exec -it deploy/client -- \
 跑 `rollout restart` 時,若這條流所在的 pod 被換掉,streaming 會**當場斷掉**(step0 不排水、不善終)。
 到 step3/step4 加上 drain + 狀態外部化後,同樣操作下連線會被好好收尾、進度也不再歸零。
 
-## 6. 清理
+## 下一步
+
+step0 是基準線。**不必先清理**,直接切到 step1 就會原地更新同一組資源、一步步把上面的問題補起來:
+
+```sh
+kubectl --context kind-zdt apply -k deploy/step1
+```
+
+→ [step1:preStop 緩衝](step1.md)
+
+## 6. 清理(想整個收掉時)
 
 ```sh
 kubectl --context kind-zdt delete -k deploy/step0

@@ -17,13 +17,14 @@ pod 被換掉的那一刻,連線還開著、進度還在記憶體裡。關機處
 
 | 步驟 | 多加了什麼 | 使用者這時會看到什麼 |
 |---|---|---|
-| **step0** | 什麼都不做 | 連線瞬間斷掉、導覽進度歸零 |
-| **step1** | preStop 緩衝 | 新請求不再打到即將關閉的 pod;但已開的連線最後還是會斷 |
-| **step2** | 程式優雅關機 | 一般 HTTP 請求會收完再結束;但 SSE 這種收不完的長連線仍會被切 |
-| **step3** | 連線排空(drain) | 瀏覽器先收到道別、乾淨重連;只是進度還會歸零 |
-| **step4** | Valkey(Redis 相容的外部儲存)+ 就緒檢查 | 重連後進度接得上,新 pod 準備好才接流量,全程無感 |
+| **[step0](demo/step0.md)** | 什麼都不做 | 連線瞬間斷掉、導覽進度歸零 |
+| **[step1](demo/step1.md)** | preStop 緩衝 | 新請求不再打到即將關閉的 pod;但已開的連線最後還是會斷 |
+| **[step2](demo/step2.md)** | 程式優雅關機 | 一般 HTTP 請求會收完再結束;但 SSE 這種收不完的長連線仍會被切 |
+| **[step3](demo/step3.md)** | 連線排空(drain) | 瀏覽器先收到道別、乾淨重連;只是進度還會歸零 |
+| **[step4](demo/step4.md)** | Valkey(Redis 相容的外部儲存)+ 就緒檢查 | 重連後進度接得上,新 pod 準備好才接流量,全程無感 |
 
-目前 repo 裡先放了 **step0**(可直接跑),step1–4 陸續補上。
+五步共用 `zdt-tour` namespace,用 `kubectl apply -k deploy/stepN` 原地切換——改的是同一組資源,
+apply 下去就觸發一次滾動更新。每步的操作步驟見 [`demo/`](demo/)。
 
 ## 目錄
 
@@ -33,7 +34,7 @@ pod 被換掉的那一刻,連線還開著、進度還在記憶體裡。關機處
 | [`deploy/`](deploy/) | Kustomize:base(陽春版 hydra)→ common(namespace + 壓測 client)→ 各 step overlay |
 | [`images/hydra/`](images/hydra/) | hydra 原始碼與 Containerfile,細節見該目錄 README |
 | [`images/loadtest/`](images/loadtest/) | 壓測用的 client 映像(內含 oha 與 curl) |
-| [`demo/`](demo/) | 各 step 的操作流程,目前先有 [`step0.md`](demo/step0.md) |
+| [`demo/`](demo/) | 各 step 的操作流程:[step0](demo/step0.md) · [step1](demo/step1.md) · [step2](demo/step2.md) · [step3](demo/step3.md) · [step4](demo/step4.md) |
 
 ## 映像(公開於 GHCR)
 
@@ -50,5 +51,7 @@ sudo -v && ./infra/up.sh
 # 2. 部署 step0
 kubectl --context kind-zdt apply -k deploy/step0
 ```
+
+跑完 step0 就 `apply -k deploy/step1`、`deploy/step2`…一路到 `deploy/step4`,原地一步步看每個機制的效果。
 
 環境細節見 [`infra/README.md`](infra/README.md);step0 逐步操作(跑壓測、觸發滾動更新、看連線怎麼被切斷)見 [`demo/step0.md`](demo/step0.md)。
