@@ -26,6 +26,8 @@ pod 被換掉的那一刻,連線還開著、進度還在記憶體裡。關機處
 五步共用 `zdt-tour` namespace,用 `kubectl apply -k deploy/stepN` 原地切換——改的是同一組資源,
 apply 下去就觸發一次滾動更新。每步的操作步驟見 [`demo/`](demo/)。
 
+> **狀態:step0–4 五步全部完成。** 每步的 kustomize overlay([`deploy/`](deploy/))與操作步驟([`demo/`](demo/))都已就緒,可直接照跑。
+
 ## 目錄
 
 | 目錄 | 內容 |
