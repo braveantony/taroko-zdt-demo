@@ -162,7 +162,18 @@ case <-r.Context().Done():      // 連線被關(pod 死/ client 斷)→ 提早�
 到 [step2](step2.md) 打開 graceful 後,同一批在途 `/slow` 會被好好等完、回乾淨的 200,
 `connection closed` 就會消失。
 
-## 還沒解決
+## 盤點:step1 解決了什麼、還沒解決什麼
 
-短請求換手已經乾淨,但**在途 / 長連線**在 SIGTERM 到來時還是被硬斷(上面的 `/slow` 就是證據)。
-要讓 app 收到 SIGTERM 後先把手上的請求好好收完,得靠程式層的優雅關機 → [step2](step2.md)。
+對照 [step0 那三類破口](step0.md#盤點step0-暴露了哪些問題):
+
+| # | 問題 | step1 狀態 | 證據 |
+|---|---|---|---|
+| ① | 新連線被拒(`Connection refused` / `connection error`) | ✅ **解決** | oha `/version` 從 step0 的 266 個錯誤 → **0(100% 成功)**;preStop 摘掉 endpoint,新連線不再打到將死的 pod |
+| ② | 在途連線被硬斷 | ❌ **沒解決** | `/slow` 實測 5 個 `connection closed before message completed`——在途請求 SIGTERM 一到照樣被剪 → **step2** |
+| ③ | 狀態隨 pod 消失(進度歸零) | ❌ **沒解決** | step1 沒碰狀態,仍存 pod 記憶體 → **step4** |
+
+**有沒有新問題?** 沒有。`/slow` 冒出來的不是新的,是 step0 本來就有、但被 `/version`(短請求)遮住的 ②——preStop 清掉 ① 之後,② 才浮上檯面成為主角。
+
+(兩個設計代價、不算錯誤:preStop 讓每顆 pod 關機多等 15 秒,整體 rollout 稍慢;另外 step0–3 都沒 `readinessProbe`,新 pod 有「還沒 `listen` 完就收流量」的理論破口,這輪沒觸發、到 step4 才補。)
+
+**下一步**:要收掉 ②——讓 app 收到 SIGTERM 後先把手上的請求好好做完——得靠程式層的優雅關機 → [step2](step2.md)。
