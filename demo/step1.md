@@ -3,13 +3,15 @@
 step0 的問題:pod 一被殺,Service 的 endpoint 還沒更新完,新連線就打到已經死掉的 pod ——
 於是一堆 `Connection refused`。
 
-**這步加的**(相對 step0 的唯一差別):一段 `preStop` 緩衝。pod 進入終止流程時,控制面會同時
-開始把它的 endpoint 標成 not-ready、並執行 `preStop` 讓 process 多活 15 秒(這不是「先摘除再等待」
-的保證順序,而是並行推進)。這 15 秒的用意,是給「endpoint 已移除」透過各節點的
-kube-proxy / Cilium datapath 傳播的時間,新流量於是逐漸不再打到這顆即將關閉的 pod。
+**這步加的**(相對 step0 的唯一差別):一段 15 秒的 `preStop` 緩衝。
 
-（app 本身仍然不處理關機,`HYDRA_GRACEFUL=off`。distroless 沒有 shell,所以 preStop 用
-K8s 原生的 `sleep` action,不是 `exec` 跑 `sleep`。）
+pod 進入終止流程時,兩件事同時開跑:控制面把它從 Service 的 endpoint 摘掉(標成 not-ready),
+kubelet 則執行 `preStop`,讓 process 先多活 15 秒再收到 SIGTERM。注意這是並行,不是「先摘掉、
+再等待」的保證順序——所以才需要這 15 秒:讓「這顆 pod 已摘掉」有時間傳到各節點的 datapath
+(kube-proxy,這裡是 Cilium),新連線就逐漸不會再打到它。
+
+(app 本身仍不處理關機,`HYDRA_GRACEFUL=off`。distroless 沒有 shell,所以 preStop 用 K8s 原生的
+`sleep` action,不是 `exec` 跑 `sleep`。)
 
 ## 切到這步
 
@@ -35,8 +37,8 @@ kubectl --context kind-zdt -n zdt-tour rollout restart deploy/hydra
 
 ## 預期現象
 
-- oha 的 **Error distribution** 明顯變少——**關機端**的 `Connection refused` 大幅減少,
-  因為舊 pod 被標成 not-ready 後,新連線逐漸不再打到它。
+- oha 的 **Error distribution** 裡,**關機端**的 `Connection refused` 大幅減少——
+  舊 pod 被標成 not-ready 後,新連線逐漸不再打到它。
 - 但不會完全歸零,還有兩個缺口:
   - **關機端**:15 秒一到、SIGTERM 送達,不處理關機的 app 立刻結束,
     **那一刻還開著的連線仍被硬斷**(多是 `Connection reset` / `closed before message completed`)。

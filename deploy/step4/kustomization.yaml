@@ -1,5 +1,5 @@
 # step4 +valkey/readiness:相對 step3 多三處——STATE_BACKEND memory→valkey、
-# 加回 readinessProbe(/readyz)、外加部署一顆 Valkey。
+# 加上 readinessProbe(/readyz)、外加部署一顆 Valkey。
 # 效果:進度存到 Valkey,pod 換掉由新 pod 接手同一份進度、瀏覽器重連續播不回退;
 #   app 啟動要先確認連得上 Valkey(有耗時),readiness 在這段期間擋住流量、就緒才收 →
 #   連線可控收尾、狀態不回退。

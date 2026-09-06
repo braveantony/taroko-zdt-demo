@@ -1,6 +1,6 @@
 # step0:common 之上只疊「一個分散在不同 node 的 hydra Deployment」該有的東西
 # (nodeSelector 固定在 hydra tier、podAntiAffinity 分散、更新策略、關機時限、liveness),
-# 外加關機行為參數(graceful=off / 記憶體 / 不排水)。
+# 外加關機行為參數(graceful=off / 記憶體 / 不排空)。
 # 沒有 preStop、沒有 readiness、沒有 graceful → rollout 時 pod 瞬間死、SSE 連線硬斷、進度歸零。
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -44,7 +44,7 @@ patches:
           periodSeconds: 10
           failureThreshold: 3
           timeoutSeconds: 1
-      # ── step0 參數:收 SIGTERM 立即死、進度存記憶體、不排水 ──
+      # ── step0 參數:收 SIGTERM 立即死、進度存記憶體、不排空 ──
       - op: add
         path: /spec/template/spec/containers/0/env
         value:

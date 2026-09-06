@@ -4,11 +4,11 @@ step3 的問題:連線善終了,但進度存在 pod 的記憶體,pod 一換就�
 
 **這步加的**(相對 step3):
 
-- `HYDRA_STATE_BACKEND=valkey`:進度改存到外部的 Valkey,所有 hydra pod 共用同一份。
-- 加回 `readinessProbe`(`/readyz`):app 啟動時會先確認連得上 Valkey(連不上就 fail-fast、
-  不進入服務),這段啟動期間 readiness 擋住流量、就緒才收。
-  (註:`/readyz` 反映的是「啟動完成、未在關機排水」,不是持續探測 Valkey 健康;
-  啟動之後 Valkey 若故障,不會讓 readiness 翻紅。)
+- `HYDRA_STATE_BACKEND=valkey`:進度改存到外部的 Valkey(Redis 相容),所有 hydra pod 共用同一份。
+- 加上 `readinessProbe`(`/readyz`):app 啟動時先確認連得上 Valkey,連不上就直接退出(fail-fast);
+  確認完成前 `/readyz` 不過,流量進不來。
+  (註:`/readyz` 只反映「啟動完成、還沒開始關機」,不是持續探測 Valkey——啟動之後 Valkey 若掛掉,
+  readiness 不會翻紅。)
 - 多部署一顆 Valkey(單副本、無持久化;`apply` 時一起建起來)。
 
 ## 切到這步
@@ -42,10 +42,9 @@ kubectl --context kind-zdt -n zdt-tour exec -it deploy/client -- sh -c \
 ## 預期現象
 
 - 重連後 `hello` 的 `pod` 換成新的,但 `seq` **接得上**——進度存在 Valkey,新 pod 讀得到同一份。
-- 加上 step1–3 的 preStop / graceful / drain,連線也是可控關閉、瀏覽器自動重連。
-  從使用者角度:連線不再非預期硬斷、導覽進度也不歸零——**體感上零停機**。
-- readiness 的作用:滾動時新 pod 要 `/readyz` 通過(啟動完成、已確認連上 Valkey)才會被加進
-  Service,補上 step0–3 那個「還沒 `listen` 完就收流量」的啟動空窗。
+- 順手把 step0 的 oha 再跑一輪、觸發一次滾動更新:Error distribution 應該幾乎空了。
+  step1 起一路提到的**啟動端** `Connection refused`,這回被 readiness 擋掉了——新 pod 要 `/readyz`
+  通過(啟動完成、連上 Valkey)才會被加進 Service,補上「還沒 `listen` 完就收流量」的空窗。
 
 ## 收尾
 

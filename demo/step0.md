@@ -14,7 +14,7 @@
 | `livenessProbe` | `GET /healthz` | 掛了會重啟 |
 | env | `HYDRA_GRACEFUL=off`、`HYDRA_STATE_BACKEND=memory`、`HYDRA_SSE_DRAIN=off` | step0 參數 |
 
-**沒有** preStop、**沒有** readinessProbe、**沒有** graceful shutdown、**沒有** 排水 → 換手瞬間連線被硬斷。
+**沒有** preStop、**沒有** readinessProbe、**沒有** graceful shutdown、**沒有** 排空 → 換手瞬間連線被硬斷。
 
 ---
 
@@ -126,7 +126,7 @@ kubectl --context kind-zdt -n zdt-tour exec -it deploy/client -- sh -c \
    curl -s -N -b /tmp/jar http://hydra.zdt-tour.svc.cluster.local/tour/events'
 ```
 
-跑 `rollout restart` 時,若這條流所在的 pod 被換掉,streaming 會**當場斷掉**(step0 不排水、不善終)。
+跑 `rollout restart` 時,若這條流所在的 pod 被換掉,streaming 會**當場斷掉**(step0 不排空、不善終)。
 到 step3/step4 加上 drain + 狀態外部化後,同樣操作下連線會被好好收尾、進度也不再歸零。
 
 ## 下一步

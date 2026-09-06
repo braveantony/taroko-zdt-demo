@@ -51,7 +51,7 @@ patches:
           periodSeconds: 10
           failureThreshold: 3
           timeoutSeconds: 1
-      # ── app 參數:仍不處理關機(graceful=off / 記憶體 / 不排水) ──
+      # ── app 參數:仍不處理關機(graceful=off / 記憶體 / 不排空) ──
       - op: add
         path: /spec/template/spec/containers/0/env
         value:
