@@ -92,10 +92,27 @@ kubectl exec -it deploy/client -- sh -c \
 
 ## 預期現象
 
-- 重連後 `hello` 的 `pod` 換成新的,但 `seq` **接得上**——進度存在 Valkey,新 pod 讀得到同一份。
-- 順手把 step0 的 oha 再跑一輪、觸發一次滾動更新:Error distribution 應該幾乎空了。
-  step1 起一路提到的**啟動端** `Connection refused`,這回被 readiness 擋掉了——新 pod 要 `/readyz`
-  通過(啟動完成、連上 Valkey)才會被加進 Service,補上「還沒 `listen` 完就收流量」的空窗。
+重連後 `hello` 的 `pod` 換成新的,但 `seq` **接得上**——進度存在 Valkey,新 pod 讀得到同一份。同一個
+測試,step3 掉回 1、step4 接得上,就是狀態外部化的效果。
+
+## 再驗一次:啟動端(readiness)
+
+readiness 也補上了「啟動端」的破口。沿用 [step0](step0.md) 的 oha 再打一輪,壓測跑著時觸發一次滾動更新:
+
+```sh
+# 終端機 A:持續壓測($TARGET 已烘進 image = http://hydra.zdt-tour.svc.cluster.local/version)
+kubectl exec -it deploy/client -- \
+  sh -c 'oha -z 60s -c 20 --disable-keepalive "$TARGET"'
+```
+
+```sh
+# 終端機 B:壓測跑著時觸發滾動更新
+kubectl rollout restart deploy/hydra
+```
+
+預期:**Error distribution 幾乎空了**。step1 起一路提到的**啟動端** `Connection refused`,這回被 readiness
+擋掉——新 pod 要 `/readyz` 通過(啟動完成、連上 Valkey)才會被加進 Service,補上「還沒 `listen` 完就收
+流量」的空窗。
 
 ## 收尾
 
