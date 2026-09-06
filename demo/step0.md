@@ -3,6 +3,31 @@
 **故事**:hydra 收到 `SIGTERM` 立即死、SSE/HTTP 連線硬斷、進度存在記憶體隨 pod 消失而歸零。
 這就是 rolling update 下 stateful 工作負載「完全不處理」的樣子,作為 step1–4 的對照基準。
 
+## hydra 本體:一個單純的 Go HTTP server
+
+先看清楚 demo 的主角有多普通——hydra 就是一支用標準庫 `net/http` 寫的伺服器:一個 `ServeMux`
+掛上幾條路由,`http.Server` 起來 `Serve`,如此而已。step0 到 step4 疊的所有「零停機」機制,
+都是加在這個平凡底座之上。
+
+```go
+// internal/server/handlers.go:註冊路由(Go 1.22+ method pattern,以下略去 instrumented 包裝)
+s.mux.Handle("GET /version",     ...)  // 回版本字串
+s.mux.Handle("GET /slow",        ...)  // 停 N 秒才回應(step1 用它測在途請求)
+s.mux.Handle("GET /healthz",     ...)  // liveness
+s.mux.Handle("GET /readyz",      ...)  // readiness(step4 才真正派上用場)
+s.mux.Handle("GET /tour",        ...)  // 導覽頁
+s.mux.Handle("GET /tour/events", ...)  // SSE 事件流
+// 還有 /、/metrics、/tour/static
+
+// internal/server/server.go:就是標準的 http.Server + Serve
+httpSrv := &http.Server{Handler: s.Handler()}
+go func() { serveErr <- httpSrv.Serve(ln) }()
+s.health.SetReady()
+```
+
+step0 對這個底座**什麼關機處理都沒加**:收到 SIGTERM 就直接結束(`HYDRA_GRACEFUL=off`,
+見下表)。之後每一步才逐一補上 preStop、優雅關機、排空、狀態外部化。
+
 **step0 相對 base 陽春疊了什麼**(見 `deploy/step0/kustomization.yaml`):
 
 | 疊上去的 | 值 | 用途 |
