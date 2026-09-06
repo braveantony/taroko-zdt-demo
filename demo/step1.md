@@ -62,9 +62,9 @@ kubectl rollout restart deploy/hydra
 
 - oha 打 `/version`:這輪實測 **100% 成功、連線層錯誤掛零**——preStop 把「新連線打到將死 pod」
   的競態關掉了。`/version` 是短請求,preStop 期間新連線早已改道,等 SIGTERM 真的送到,舊 pod
-  手上也幾乎沒有在途連線可斷。對照 [step0](step0.md#實際輸出範例) 的 266 個連線層錯誤,差別很直接。
+  手上也幾乎沒有還在服務的連線可斷。對照 [step0](step0.md#實際輸出範例) 的 266 個連線層錯誤,差別很直接。
 - 但這只代表「短請求 + 換手」這個組合被 preStop 蓋掉了,**不代表 step1 已經零停機**。還沒解的是:
-  - **在途 / 較慢的請求**:若請求還沒處理完 SIGTERM 就到,裸奔 app 立刻死 → 照樣斷
+  - **做到一半 / 較慢的請求**:若請求還沒處理完 SIGTERM 就到,裸奔 app 立刻死 → 照樣斷
     (step2 的優雅關機才會把手上的請求收完)。
   - **SSE 長連線**:preStop 到期、SIGTERM 一到就被硬斷——用 `/version` 這種短請求看不到,
     得掛一條 SSE 才看得出來(step2 起改善、step3 才乾淨收)。
@@ -89,13 +89,13 @@ Error distribution:
 ```
 
 16 萬個請求、**100% 成功**,連線層錯誤掛零(那 7 個 `aborted due to deadline` 是 `-z`(壓測時間)
-到點、還在途的請求被中止,與滾動更新無關)。step0 同樣的壓測有 266 個 `Connection refused` 等連線
+到點、還在跑的請求被中止,與滾動更新無關)。step0 同樣的壓測有 266 個 `Connection refused` 等連線
 錯誤,到 step1 直接歸零——這就是 preStop 對「短請求換手」的效果。
 
-## 為什麼「在途」還是會斷:背後的 code
+## 為什麼「做到一半的請求」還是會斷:背後的 code
 
 `/version` 乾淨,是因為它太快——preStop 那 15 秒早就讓它跑完了。但只要有請求在 **SIGTERM 真正送到時
-還沒回應完**(較長的在途請求,尤其是永不結束的 SSE 長連線),step1 就救不了。因為 app 是裸奔的:
+還沒回應完**(較長、還在處理的請求,尤其是永不結束的 SSE 長連線),step1 就救不了。因為 app 是裸奔的:
 `HYDRA_GRACEFUL=off` 讓 main **不註冊** SIGTERM handler,收到 SIGTERM 直接由 Go runtime 終止程序,
 連線當場被剪:
 
@@ -105,12 +105,12 @@ signals := make(chan os.Signal, 2)
 if cfg.Graceful {
     signal.Notify(signals, syscall.SIGTERM, os.Interrupt)
 } else {
-    // 不註冊 handler → 收到 SIGTERM 由 Go runtime 直接終止程序(exit 143),不 Shutdown、不等在途連線
+    // 不註冊 handler → 收到 SIGTERM 由 Go runtime 直接終止程序(exit 143),不 Shutdown、不等手上的連線
     logger.Warn("graceful shutdown DISABLED — SIGTERM 將直接終止程序")
 }
 ```
 
-這種「在途 / 長連線被硬斷」最容易在 **SSE** 上看到——它一定黏在某顆 pod、一定在途。step1 下 SIGTERM
+這種「請求做到一半 / 長連線被硬斷」最容易在 **SSE** 上看到——它一定黏在某顆 pod、一定還在跑。step1 下 SIGTERM
 一到,SSE 就被硬斷(約 `Terminating` 後 15 秒);到 [step2](step2.md) 的 graceful 會拖到約 30 秒(但仍斷),
 step3 才乾淨收。這條 SSE 對照從 step2 開始跑。
 
@@ -121,10 +121,10 @@ step3 才乾淨收。這條 SSE 對照從 step2 開始跑。
 | # | 問題 | step1 狀態 | 證據 |
 |---|---|---|---|
 | ① | 新連線被拒(`Connection refused` / `connection error`) | ✅ **解決** | oha `/version` 從 step0 的 266 個錯誤 → **0(100% 成功)**;preStop 摘掉 endpoint,新連線不再打到將死的 pod |
-| ② | 在途 / 長連線被硬斷 | ❌ **沒解決** | 裸奔 app 收 SIGTERM 立即死(見上方 code);長連線最明顯——SSE 一到 SIGTERM 就斷 → **step2 / step3** |
+| ② | 請求做到一半 / 長連線被硬斷 | ❌ **沒解決** | 裸奔 app 收 SIGTERM 立即死(見上方 code);長連線最明顯——SSE 一到 SIGTERM 就斷 → **step2 / step3** |
 | ③ | 狀態隨 pod 消失(進度歸零) | ❌ **沒解決** | step1 沒碰狀態,仍存 pod 記憶體 → **step4** |
 
-**有沒有新問題?** 沒有。preStop 把短請求的錯誤清掉後,剩下的「在途 / 長連線被硬斷」是 step0 本來就有、只是被 `/version`(短請求)遮住的 ②,不是新問題。
+**有沒有新問題?** 沒有。preStop 把短請求的錯誤清掉後,剩下的「請求做到一半 / 長連線被硬斷」是 step0 本來就有、只是被 `/version`(短請求)遮住的 ②,不是新問題。
 
 (兩個設計代價、不算錯誤:preStop 讓每顆 pod 關機多等 15 秒,整體 rollout 稍慢;另外 step0–3 都沒 `readinessProbe`,新 pod 有「還沒 `listen` 完就收流量」的理論破口,這輪沒觸發、到 step4 才補。)
 
