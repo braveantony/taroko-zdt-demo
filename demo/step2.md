@@ -96,6 +96,15 @@ kubectl exec -it deploy/client -- \
   sh -c 'oha -z 60s -c 5 "http://hydra.zdt-tour.svc.cluster.local/slow?seconds=10"'
 ```
 
+指令拆解——`oha` 是一支 HTTP 壓測工具(類似 `hey` / `wrk`,會即時顯示成功率與延遲分佈):
+
+- **`-z 60s`**:持續打 **60 秒**(`-z` 是時間模式;`-n` 才是固定次數)。
+- **`-c 5`**:**5 條連線同時**打(並行度)。
+- **`/slow?seconds=10`**:hydra 的測試端點,收到請求後**故意睡 10 秒**才回覆,專門用來製造「關機當下還在途的長請求」。
+- 這裡**沒加 `--disable-keepalive`** → 用的是 keep-alive(連線重複用),這對本測試很關鍵,下面 keep-alive 那段細講。
+
+打壓測的同時,另開一個終端觸發滾動更新:
+
 ```sh
 kubectl rollout restart deploy/hydra
 ```
@@ -157,13 +166,16 @@ Error distribution:
 preStop 15 之後只剩 5 秒 < 10 → SIGKILL 砍(5 條);tGPS=45 時還有 15 秒 > 10 → 收得完(0 條)。這就是上面
 兩組數據的由來。
 
-**keep-alive 在這裡幹嘛?** oha 的連線會黏在同一個 pod 上重複用。所以 preStop 那 15 秒,連線還釘在要走的
-pod 上、一個請求跑完立刻送下一個——**保證 SIGTERM 那一刻,pod 上一定卡著一個剛開跑的 `/slow=10`**,剛好頂
-到 tGPS 邊界,問題才演得出來。
+**keep-alive 是什麼?** HTTP/1.1 預設開:**一條 TCP 連線打完一個請求不關掉,接著重複用來打下一個**,省掉
+每次重建 TCP(甚至 TLS)握手的成本。oha 沒加 `--disable-keepalive` 就是開著。開跟關,oha 的行為差在:
 
-**那把 keep-alive 關掉呢?** 加 `--disable-keepalive` 後每個請求都開新連線;pod 一進 `Terminating`、endpoint
-被摘掉,新連線就不再進這顆 pod → SIGTERM 時 pod 上根本沒有卡著的請求(先前的早在 preStop 內就跑完)→ 就算
-tGPS=20 也砍不到東西。**關掉 keep-alive,反而看不到 tGPS 的問題。**
+- **開(預設)**:5 條連線各自建好後**一直用同一條**。連線一旦連上某顆 pod 就**黏在那顆 pod**——TCP 連線不會每個請求重新經過 Service 分流。
+- **關(`--disable-keepalive`)**:**每個請求開一條新連線、打完就關**。每條新連線都重新過一次 Service 分流,只會落到當下 Ready 的 pod。
+
+差別搬到關機情境,正好是「能不能演出 tGPS 問題」的關鍵:
+
+- **開**:pod 進 preStop 時 endpoint 雖已摘掉,但**既有的 TCP 連線還連著**,oha 沿用它繼續把 `/slow=10` 灌進這顆要走的 pod → **SIGTERM 那一刻 pod 上一定卡著在途請求 → 逼出 tGPS 邊界**。
+- **關**:pod 一進 `Terminating`、endpoint 被摘,**新連線就不再進這顆 pod**;它身上先前的請求早在 preStop 15 秒內就跑完 → SIGTERM 時沒有卡著的請求 → **就算 tGPS=20 也砍不到,tGPS 問題被藏住**。
 
 實測對照(全部 `/slow=10`、`-c 5`、跑滿 60 秒、中途觸發一次 rollout):
 
